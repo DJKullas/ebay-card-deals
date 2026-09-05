@@ -1,0 +1,18 @@
+{
+  "name": "ebay-card-deals",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Scans eBay listings ending soon for graded (PSA 10) sports and Pokemon cards, prices them against a price guide, and emails you when one is underpriced.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.9"
+  },
+  "scripts": {
+    "scan": "node --env-file-if-exists=.env src/index.js",
+    "scan:dry": "node --env-file-if-exists=.env src/index.js --dry-run",
+    "test": "node --test \"test/**/*.test.js\""
+  },
+  "dependencies": {
+    "nodemailer": "^7.0.6"
+  }
+}
