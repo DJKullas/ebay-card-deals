@@ -53,7 +53,8 @@ export class Store {
   }
 
   save() {
-    if (!this.dirty) return;
+    // Always leave a file behind so the CI cache step has something to save.
+    if (!this.dirty && fs.existsSync(this.file)) return;
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     fs.writeFileSync(this.file, JSON.stringify(this.data));
     this.dirty = false;

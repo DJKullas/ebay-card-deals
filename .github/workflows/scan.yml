@@ -30,9 +30,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -42,7 +42,7 @@ jobs:
       # Persist state/ (dedupe + price cache) between runs. Each run writes a
       # new cache entry and restores the most recent one.
       - name: Restore state
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: state
           key: scan-state-${{ github.run_id }}
@@ -70,7 +70,7 @@ jobs:
 
       - name: Save state
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: state
           key: scan-state-${{ github.run_id }}

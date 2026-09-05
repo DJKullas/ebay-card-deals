@@ -148,7 +148,7 @@ async function main() {
 
   // --- 3. price + evaluate -------------------------------------------------
   const deals = [];
-  const stats = { priced: 0, confident: 0, noMatch: 0, lowConfidence: 0, noValue: 0, noCardNumber: 0, detailFetches: 0, errors: 0, truncated: 0 };
+  const stats = { priced: 0, confident: 0, unpriced: 0, lowConfidence: 0, noValue: 0, noCardNumber: 0, detailFetches: 0, errors: 0, truncated: 0 };
   let processed = 0;
 
   for (const cand of candidates) {
@@ -201,7 +201,7 @@ async function main() {
       }
 
       if (!priced) {
-        stats.noMatch += 1;
+        stats.unpriced += 1;
         if (VERBOSE) console.log(`  no price: ${cand.listing.title}`);
         continue;
       }
@@ -252,7 +252,7 @@ async function main() {
   const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
   console.log(
     `Done in ${secs}s. priced=${stats.priced} confident=${stats.confident} lowConfidence=${stats.lowConfidence} noValue=${stats.noValue} ` +
-      `noMatch=${stats.noMatch} noCardNumber=${stats.noCardNumber} detailFetches=${stats.detailFetches} errors=${stats.errors} truncated=${stats.truncated} | ` +
+      `unpriced=${stats.unpriced} noCardNumber=${stats.noCardNumber} detailFetches=${stats.detailFetches} errors=${stats.errors} truncated=${stats.truncated} | ` +
       `API calls: rapidapi=${ebay.requestCount} pricecharting=${pcClient.requestCount} psa=${psa.lookups} | state entries=${store.size}`,
   );
   if (ebay.quota.remaining !== null) {
