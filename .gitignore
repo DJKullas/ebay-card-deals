@@ -2,6 +2,7 @@ node_modules/
 .env
 .env.*
 !.env.example
-state/
+# runtime state (dedupe + price cache) — not src/state/
+/state/
 *.log
 .DS_Store
