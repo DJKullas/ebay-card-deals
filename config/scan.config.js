@@ -211,8 +211,9 @@ export const pricing = {
   // no longer have spare with three searches per run, it can't price raw
   // cards, and asks are a weaker signal than the guide.
   providers: ['pricecharting'],
-  // Hard caps so a run finishes inside the cron window.
-  maxListingsPerRun: 250,
+  // Hard caps so a run finishes inside the cron window. At ~1.1s per new
+  // listing the time budget is normally what stops a busy run.
+  maxListingsPerRun: 500,
   maxRunSeconds: 600,
   // PriceCharting values update daily; cache lookups this long.
   cacheTtlHours: 24,
