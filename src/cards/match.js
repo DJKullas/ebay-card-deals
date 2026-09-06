@@ -87,21 +87,26 @@ export function matchProduct(listing, products, ctx) {
       continue;
     }
 
-    // Exact eBay catalogue match beats everything.
-    if (ctx.epid && product.epid && String(product.epid) === String(ctx.epid)) {
-      return { product, confidence: 1, reasons: ['epid match'], candidates: [{ product, score: 1, reasons: ['epid match'] }] };
-    }
+    // Same eBay catalogue product (ePID): strong evidence for *which card*
+    // (set / player / number), but sellers routinely attach the wrong parallel's
+    // catalogue entry to a base card (and vice versa), so it is not allowed to
+    // override the variant check below — only the identity part is trusted.
+    const epidHit = Boolean(ctx.epid && product.epid && String(product.epid) === String(ctx.epid));
 
     const { name, variant, number } = parseProductName(product['product-name']);
     const set = parseConsoleName(product['console-name']);
     const reasons = [];
     let score = 0;
 
-    // Card number: strongest signal. A conflicting number is disqualifying.
+    // Card number: strongest signal. A conflicting number is disqualifying
+    // (with an ePID it is only a penalty: "#48/199" style serials get misread).
     if (listing.cardNumber && number) {
       if (listing.cardNumber === number) {
         score += WEIGHTS.number;
         reasons.push('number');
+      } else if (epidHit) {
+        score -= 0.2;
+        reasons.push(`number mismatch (${listing.cardNumber} vs ${number})`);
       } else {
         continue;
       }
@@ -141,6 +146,15 @@ export function matchProduct(listing, products, ctx) {
     if (set.japanese !== listing.isJapanese) {
       score -= 0.4;
       reasons.push(set.japanese ? 'guide is Japanese, listing is not' : 'listing is Japanese, guide is not');
+    }
+
+    if (epidHit) {
+      // Identity (set / player / number) is settled by the catalogue entry, so a
+      // terse title missing a few set words shouldn't drag it down. The variant
+      // check below still applies in full.
+      const numberPenalty = listing.cardNumber && number && listing.cardNumber !== number ? 0.2 : 0;
+      score = Math.max(score, WEIGHTS.number + WEIGHTS.name + WEIGHTS.set + WEIGHTS.year - numberPenalty);
+      reasons.push('epid');
     }
 
     // Variant / parallel.

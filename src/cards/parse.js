@@ -39,6 +39,9 @@ const YEAR_RE = /\b(19[5-9]\d|20[0-4]\d)(?:-\d{2})?\b/;
 const TCG_NUMBER_RE = /\b([A-Z]{0,3}\d{1,3})\s*\/\s*([A-Z]{0,3}\d{1,3})\b/i;
 // Sports style "#27", "# P-37", "No. 280", "#BSPA-FV"
 const HASH_NUMBER_RE = /(?:#|\bno\.?\s*)\s*([A-Z]{0,6}-?\d{1,4}[A-Z]?|[A-Z]{1,6}-[A-Z0-9]{1,6})\b/i;
+// Same, but a number immediately followed by "/n" is serial numbering ("#48/199");
+// "#280 /199" (space) is still card 280 with a print run.
+const HASH_NUMBER_SPORTS_RE = /(?:#|\bno\.?\s*)\s*([A-Z]{0,6}-?\d{1,4}[A-Z]?|[A-Z]{1,6}-[A-Z0-9]{1,6})\b(?!\/\s*\d)/i;
 // Letters-hyphen-letters/numbers tokens like "CHRU-LK", "RR-26", "BCP-180" without a '#'
 const CODE_NUMBER_RE = /\b([A-Z]{1,6}-[A-Z0-9]{1,6})\b/;
 // Note: serial numbering like "/199" or "24/99" is NOT a card number in sports;
@@ -163,8 +166,8 @@ function detectCardNumber(clean, kind, spec) {
     if (h) return { value: normaliseCardNumber(h[1]), raw: h[1] };
     return null;
   }
-  // sports
-  const h = clean.match(HASH_NUMBER_RE);
+  // sports. "#48/199" is a serial number (48 of 199), not card #48.
+  const h = clean.match(HASH_NUMBER_SPORTS_RE);
   if (h) return { value: normaliseCardNumber(h[1]), raw: h[1] };
   const c = clean.match(CODE_NUMBER_RE);
   if (c && !/^\d/.test(c[1])) return { value: normaliseCardNumber(c[1]), raw: c[1] };

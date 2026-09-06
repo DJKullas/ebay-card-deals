@@ -140,9 +140,26 @@ test('off-by-one year is not enough to be confident', () => {
   assert.ok(m.confidence < deal.minMatchConfidence, `confidence ${m.confidence}`);
 });
 
-test('epid match is a certainty', () => {
-  const listing = parseListing('weird title PSA 10', { kind: 'tcg' });
+test('epid settles identity when the title is terse', () => {
+  const listing = parseListing('Charizard 4/102 PSA 10', { kind: 'tcg' });
   const products = [P('1', 'Pokemon Base Set', 'Charizard #4', '9073635929')];
   const m = matchProduct(listing, products, ctx(pokemon, '9073635929'));
   assert.equal(m.confidence, 1);
+  assert.ok(m.reasons.includes('epid'));
+});
+
+test('epid does not override a parallel the title never mentions', () => {
+  // Seller attached the "Silver Pyramids" catalogue entry to a plain insert.
+  const listing = parseListing('2025 Panini Phoenix - Thunderbirds Jaxson Dart #38 PSA 10', { kind: 'sports' });
+  const products = [P('1', 'Football Cards 2025 Panini Phoenix Thunderbirds', 'Jaxson Dart [Silver Pyramids] #38', '555')];
+  const m = matchProduct(listing, products, ctx(sports, '555'));
+  assert.ok(m.confidence < deal.minMatchConfidence, `confidence ${m.confidence}`);
+  assert.ok(m.reasons.some((r) => r.includes('not in title')));
+});
+
+test('epid cannot rescue a different player', () => {
+  const listing = parseListing('2018 Panini Prizm Luka Doncic #280 PSA 10', { kind: 'sports' });
+  const products = [P('1', 'Basketball Cards 2018 Panini Prizm', 'Trae Young #78', '777')];
+  const m = matchProduct(listing, products, ctx(sports, '777'));
+  assert.equal(m.product, null);
 });

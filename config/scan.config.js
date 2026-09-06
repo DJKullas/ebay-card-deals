@@ -141,7 +141,8 @@ export const targets = [
     label: 'Autograph',
     // Pokemon has no pack-pulled autographs (and the guide has no auto products).
     categoryKeys: ['sports'],
-    searchQuery: 'auto',
+    // eBay's OR syntax; "auto" alone misses titles that only say "Autograph".
+    searchQuery: '(auto,autograph)',
     conditionIds: [],
     minPrice: 15,
     require: { autograph: true },

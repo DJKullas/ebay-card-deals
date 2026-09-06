@@ -52,8 +52,8 @@ Alternatives considered: PokemonPriceTracker / PokeTrace / TCG Price Lookup (Pok
 * year match **+0.05** (off by one −0.25, more −0.40)
 * variant: guide says `[Silver Prizm]` and title says "Silver Prizm" **+0.05**; guide variant missing from title **−0.50**; guide is base but title names a parallel **−0.20**; Japanese vs English mismatch **−0.40**
 * if the runner-up is within 0.10 the result is *ambiguous* → **−0.15**
-* an exact eBay ePID match (when the guide provides one) = **1.0**
-* **autograph consistency is a hard rule**, checked before everything else including the ePID shortcut: a listing that says auto/autograph/signed can only match a guide product that is an autograph (`[Autograph …]`, `… Rookie Autographs`, `[Signature …]`), and a listing that doesn't can never match one. Pricing a base card against its auto version is the easiest way to invent a fake 90%-off deal.
+* an exact eBay ePID match (when the guide provides one) settles the *identity* part (number + name + set + year = 0.95) but **not the variant**: sellers routinely attach a parallel's catalogue entry to a base card, so the variant check above still applies in full and a conflicting card number costs −0.20 instead of disqualifying
+* **autograph consistency is a hard rule**, checked before everything else including the ePID identity credit: a listing that says auto/autograph/signed can only match a guide product that is an autograph (`[Autograph …]`, `… Rookie Autographs`, `[Signature …]`), and a listing that doesn't can never match one. Pricing a base card against its auto version is the easiest way to invent a fake 90%-off deal.
 * a title that mentions a grader but has no readable grade (truncated title, "PSA 20") is never priced as raw.
 
 Anything under `deal.minMatchConfidence` (0.75; 0.85 for autos) is ignored. Listings with no card number in the title can't reach that bar, so they're skipped without spending an API call (unless you enable item-specifics fetching, which usually recovers the number and cert).

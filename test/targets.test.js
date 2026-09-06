@@ -80,7 +80,7 @@ test('searchPlan: one eBay search per target × category, with the category pref
   assert.equal(plan.length, 3);
   assert.ok(plan.some((p) => p.category.key === 'pokemon' && p.query === 'pokemon psa 10'));
   assert.ok(plan.some((p) => p.category.key === 'sports' && p.query === 'psa 10'));
-  assert.ok(plan.some((p) => p.category.key === 'sports' && p.target.key === 'auto' && p.query === 'auto'));
+  assert.ok(plan.some((p) => p.category.key === 'sports' && p.target.key === 'auto' && p.query === '(auto,autograph)'));
 });
 
 test('a non-auto listing is never priced as the autograph product', () => {

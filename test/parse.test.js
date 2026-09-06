@@ -50,6 +50,9 @@ test('sports card numbers come from # or CODE-style tokens, never from serials',
   assert.equal(parseListing('2024 UPPER DECK UD PORTRAITS #P37 MACKLIN CELEBRINI PSA 10', { kind: 'sports' }).cardNumber, 'P37');
   assert.equal(parseListing('2022 Bowman Sapphire PSA 10 1st Felix Valerio On Card Auto AQUA 24/99 #BSPA-FV', { kind: 'sports' }).cardNumber, 'BSPAFV');
   assert.equal(parseListing('2018 Panini Prizm Luka Doncic Silver PSA 10 /99', { kind: 'sports' }).cardNumber, null);
+  // "#48/199" is a print run, not card #48; "#280 /199" is card 280 with a print run
+  assert.equal(parseListing('2018-19 Select Trae Young Rookie Jersey Auto RC #48/199 Hawks BGS 9', { kind: 'sports' }).cardNumber, null);
+  assert.equal(parseListing('2018 Panini Prizm Luka Doncic #280 /199 Silver PSA 10', { kind: 'sports' }).cardNumber, '280');
 });
 
 test('year detection', () => {
