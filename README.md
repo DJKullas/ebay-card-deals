@@ -12,8 +12,8 @@ Adding other grades or categories is a config change (see [Expanding coverage](#
 ## How it works
 
 ```
-GitHub Actions cron (*/15)
-  └─ src/index.js
+GitHub Actions: one ~5.7h job (`node src/index.js --loop`), relaunched every 3h, queued behind the running one
+  └─ every 15 minutes:
        1. eBay search  ─ RapidAPI "Real-Time eBay Data" /ebay_search (wraps eBay Browse API)
           one search per target × category (pokemon "psa 10", sports "psa 10", sports "auto"),
           auctions, sorted ending-soonest, itemEndDate <= now + 25 min; first page always,
@@ -82,7 +82,7 @@ Add these repository secrets (Settings → Secrets and variables → Actions):
 | `DISCORD_WEBHOOK_URL` | optional | instant phone pushes; can be used instead of or alongside email |
 | `PSA_API_TOKEN` | optional | from psacard.com/publicapi |
 
-The `Scan eBay card deals` workflow runs on the cron and can also be triggered by hand (Actions → Run workflow) with a dry-run toggle. The `Tests` workflow runs on every push.
+The `Scan eBay card deals` workflow is launched by the cron and can also be triggered by hand (Actions → Run workflow) with a dry-run toggle and an optional `loop_minutes` (0 = single scan). The `Tests` workflow runs on every push.
 
 ## Configuration
 
@@ -90,7 +90,8 @@ Everything tunable lives in **`config/scan.config.js`** — no code changes need
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `schedule.scanIntervalMinutes` | 15 | how often the cron runs (must match `.github/workflows/scan.yml`; a test enforces this) |
+| `schedule.scanIntervalMinutes` | 15 | how often the loop scans |
+| `schedule.loopMinutes` / `launchEveryHours` | 340 / 3 | how long one Actions job loops, and how often a replacement is launched (must match the cron in `.github/workflows/scan.yml`; a test enforces this) |
 | `schedule.minMinutesLeft` | 5 | never alert on (or bother pricing) anything ending sooner than this |
 | `schedule.lookaheadMinutes` | 25 | window end; must be ≥ `minMinutesLeft + scanIntervalMinutes` so runs don't leave gaps (the extra 5 min overlaps the next run and absorbs late cron ticks) |
 | `ebay.buyingOptions` | `['AUCTION']` | add `'FIXED_PRICE'` to include timed BINs (GTC listings have no end date and are dropped) |
@@ -129,17 +130,18 @@ At a 15-minute cadence that's 2,880 runs/month → **8,640** mandatory requests,
 
 PriceCharting's own limit (1 req/s, one call per new listing thanks to the search endpoint carrying prices) means ~500 listings can be priced per run; `pricing.maxListingsPerRun` and `maxRunSeconds` keep a run inside the cron window, soonest-ending listings first. Lookups are cached for 24h so repeat cards are free.
 
-## GitHub Actions minutes (read this too)
+## How the schedule actually works (read this too)
 
-This repo is **private**, and private repos get 2,000 free Actions minutes/month (3,000 on Pro). A run takes 5–10 minutes and there are 2,880 runs/month, i.e. ~20,000 minutes — GitHub will stop running the workflow once the free minutes are gone (or bill you if you have set a spending limit). Options, cheapest first:
+GitHub's cron scheduler is best-effort and, for busy schedules, erratic: a `*/15` cron on this repo fired **6 times in 14 hours**. So the 15-minute loop lives inside the process instead:
 
-1. **Make the repository public** — public repos have unlimited Actions minutes and the secrets stay secret. Nothing in the code is sensitive.
-2. Run `npm run scan` from any always-on machine with `cron` / Task Scheduler (also fixes GitHub's late ticks).
-3. A self-hosted runner.
+* `node src/index.js --loop` scans every `schedule.scanIntervalMinutes` for `schedule.loopMinutes` (340 min), saving state after each scan, then exits so the job can save its cache. GitHub kills jobs at 6 hours.
+* The workflow cron launches a new job every `schedule.launchEveryHours` (3h) — on purpose more often than a job lasts. The `concurrency` group keeps the newcomer **pending** until the running job exits, so the hand-off is seamless even when a cron tick is skipped or hours late. Only one job runs at a time.
+* This runs ~43,000 Actions minutes/month, which is why the repo is **public** (unlimited minutes for public repos; secrets stay secret). On a private repo you'd burn the 2,000 free minutes in 1.5 days — run `npm run scan -- --loop` from an always-on machine instead.
+* To start coverage right now (e.g. after a config change) trigger the workflow by hand with `loop_minutes` = 340; the next cron launch queues behind it.
 
 ## Caveats
 
 * "X% below market" is the **current bid** at scan time. Auctions with 0–2 bids ending in 20 minutes routinely double in the last 30 seconds; `deal.minBidCount` lets you demand real bidding interest first. Alerts now arrive with 5–25 minutes left precisely so you can watch the finish.
 * Raw autographs are priced at the guide's ungraded value, which assumes a clean card. Obvious damage words are excluded from the title, but check the photos.
-* GitHub's scheduler is best-effort; ticks are frequently 3–10 minutes late (hence the 5-minute overlap). For tighter timing run the same script from any always-on box with `cron`.
+* Scan timing inside a job is exact (setTimeout, not cron); the 5-minute window overlap covers scans that overrun their slot on very busy evenings.
 * Only what a seller writes in the title is used unless `detailFetch` is enabled. Mis-titled listings ("PSA 10" on a PSA 9) will be caught only with `detailFetch` + PSA cert verification.

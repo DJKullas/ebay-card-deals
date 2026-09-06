@@ -36,6 +36,11 @@ const opt = (name, def) => {
 const DRY_RUN = flag('--dry-run');
 const VERBOSE = flag('--verbose') || process.env.DEBUG === '1';
 const LIMIT = Number(opt('--limit', config.pricing.maxListingsPerRun));
+// --loop [minutes]: keep scanning every scanIntervalMinutes for this long
+// (default config.schedule.loopMinutes), then exit. GitHub's cron scheduler
+// is too erratic for a 15-minute cadence, so the workflow runs one long job.
+const loopArg = opt('--loop', null);
+const LOOP_MINUTES = flag('--loop') ? Number(loopArg && !loopArg.startsWith('--') ? loopArg : config.schedule.loopMinutes) : 0;
 
 main().catch((err) => {
   console.error('FATAL', err);
@@ -43,6 +48,30 @@ main().catch((err) => {
 });
 
 async function main() {
+  if (!LOOP_MINUTES) return scanOnce();
+
+  const intervalMs = config.schedule.scanIntervalMinutes * 60_000;
+  const endAt = Date.now() + LOOP_MINUTES * 60_000;
+  console.log(`Loop mode: scanning every ${config.schedule.scanIntervalMinutes} min for ${LOOP_MINUTES} min (until ${new Date(endAt).toISOString()})`);
+  for (let n = 1; ; n += 1) {
+    const tick = Date.now();
+    console.log(`\n===== scan ${n} · ${new Date(tick).toISOString()} =====`);
+    try {
+      await scanOnce();
+    } catch (err) {
+      console.error('scan failed:', err);
+      process.exitCode = 1;
+    }
+    const next = tick + intervalMs;
+    if (next >= endAt) break;
+    const wait = Math.max(0, next - Date.now());
+    if (wait === 0) console.warn(`  scan overran the ${config.schedule.scanIntervalMinutes}-minute interval by ${((Date.now() - next) / 1000).toFixed(0)}s`);
+    await new Promise((r) => setTimeout(r, wait));
+  }
+  console.log(`Loop finished after ${((Date.now() - (endAt - LOOP_MINUTES * 60_000)) / 60_000).toFixed(0)} min.`);
+}
+
+async function scanOnce() {
   const startedAt = Date.now();
   const env = process.env;
   const stateFile = path.resolve(process.cwd(), 'state', 'state.json');

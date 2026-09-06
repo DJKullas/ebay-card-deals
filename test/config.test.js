@@ -7,17 +7,26 @@ import * as config from '../config/scan.config.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-test('workflow cron matches schedule.scanIntervalMinutes', () => {
+test('workflow launches a looping job that outlives the launch interval', () => {
   const yml = fs.readFileSync(path.join(root, '.github/workflows/scan.yml'), 'utf8');
-  const m = yml.match(/cron:\s*'\*\/(\d+) \* \* \* \*'/);
-  assert.ok(m, 'expected a "*/N * * * *" cron in scan.yml');
-  assert.equal(Number(m[1]), config.schedule.scanIntervalMinutes, 'scan.yml cron and config.schedule.scanIntervalMinutes disagree');
+  const s = config.schedule;
+  const cron = yml.match(/cron:\s*'0 \*\/(\d+) \* \* \*'/);
+  assert.ok(cron, 'expected a "0 */N * * *" cron in scan.yml');
+  assert.equal(Number(cron[1]), s.launchEveryHours, 'scan.yml cron and config.schedule.launchEveryHours disagree');
+  // The next launch must be queued (concurrency group) before the running job ends.
+  assert.ok(s.loopMinutes > s.launchEveryHours * 60, 'loopMinutes must exceed the launch interval or coverage has gaps');
+  // ...and the job must finish (last scan included) before GitHub's 6h kill.
+  const timeout = yml.match(/timeout-minutes:\s*(\d+)/);
+  assert.ok(timeout, 'expected timeout-minutes in scan.yml');
+  assert.ok(s.loopMinutes + config.pricing.maxRunSeconds / 60 < Number(timeout[1]), 'loop + last scan must fit inside timeout-minutes');
+  assert.ok(Number(timeout[1]) <= 360, 'GitHub kills jobs at 6 hours');
+  assert.ok(/concurrency:\s*\n\s*group:/.test(yml) && /cancel-in-progress:\s*false/.test(yml), 'launches must queue behind the running job, not cancel it');
+  assert.ok(/--loop/.test(yml), 'scheduled runs must use --loop');
 });
 
 test('config sanity', () => {
   const s = config.schedule;
-  assert.ok(s.scanIntervalMinutes >= 5, 'GitHub Actions cron minimum is 5 minutes');
-  assert.ok(60 % s.scanIntervalMinutes === 0, 'interval must divide an hour for a */N cron');
+  assert.ok(s.scanIntervalMinutes >= 1);
   assert.ok(s.minMinutesLeft >= 0);
   assert.ok(s.lookaheadMinutes >= s.minMinutesLeft + s.scanIntervalMinutes, 'consecutive runs would leave a gap in coverage');
   assert.ok(config.categories.length > 0);

@@ -24,6 +24,19 @@ export const schedule = {
   // listing a second look. Duplicates are cheap: guide prices are cached and
   // alerted items are deduped.
   lookaheadMinutes: 25,
+
+  // GitHub's cron scheduler is far too erratic for this (it fired a "*/15"
+  // schedule 6 times in 14 hours), so the workflow instead runs ONE long job
+  // that loops internally (`node src/index.js --loop`), scanning every
+  // scanIntervalMinutes for loopMinutes and then exiting so the state cache
+  // can be saved. GitHub kills jobs at 6 hours; leave room for the last scan
+  // (pricing.maxRunSeconds) to finish.
+  loopMinutes: 340,
+  // The workflow cron launches a fresh looping job this often. It is shorter
+  // than loopMinutes on purpose: the concurrency group holds the newcomer in
+  // "pending" until the running job exits, so coverage is seamless even when a
+  // cron tick is skipped or hours late. Must match the cron in scan.yml (tested).
+  launchEveryHours: 3,
 };
 
 /** eBay search behaviour (RapidAPI "Real-Time eBay Data", /ebay_search) */

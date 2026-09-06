@@ -1,14 +1,25 @@
 name: Scan eBay card deals
 
+# One long-running job scans every schedule.scanIntervalMinutes (15) for
+# schedule.loopMinutes (~5.7h), then exits so its state cache can be saved.
+# GitHub's cron scheduler is far too erratic for a 15-minute schedule (it fired
+# a "*/15" cron 6 times in 14 hours), which is why the loop lives in the process.
+#
+# The cron launches a replacement every 3 hours — deliberately more often than
+# the job lasts. The concurrency group holds the newcomer in "pending" until the
+# running job exits, so coverage is seamless even when a cron tick is skipped or
+# hours late. Only one job ever runs at a time, so this costs no extra minutes.
 on:
   schedule:
-    # Every 15 minutes. Keep in sync with schedule.scanIntervalMinutes in
-    # config/scan.config.js (test/config.test.js fails if they drift).
-    # Note: GitHub cron ticks are often several minutes late, which is why the
-    # scan window (5-25 min out) overlaps the next run by 5 minutes.
-    - cron: '*/15 * * * *'
+    # Keep in sync with schedule.launchEveryHours in config/scan.config.js
+    # (test/config.test.js fails if they drift).
+    - cron: '0 */3 * * *'
   workflow_dispatch:
     inputs:
+      loop_minutes:
+        description: 'Keep scanning every 15 min for this many minutes (0 = one scan and exit)'
+        type: number
+        default: 0
       dry_run:
         description: 'Dry run (no notifications, no dedupe writes)'
         type: boolean
@@ -28,7 +39,8 @@ permissions:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 14
+    # loopMinutes (340) + one last scan (maxRunSeconds) must fit; GitHub kills at 360.
+    timeout-minutes: 355
     steps:
       - uses: actions/checkout@v5
 
@@ -39,7 +51,7 @@ jobs:
 
       - run: npm ci
 
-      # Persist state/ (dedupe + price cache) between runs. Each run writes a
+      # Persist state/ (dedupe + price cache) between jobs. Each job writes a
       # new cache entry and restores the most recent one.
       - name: Restore state
         uses: actions/cache/restore@v5
@@ -63,8 +75,11 @@ jobs:
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        # schedule → --loop (config.schedule.loopMinutes); manual → --loop N only if asked.
         run: >
           node src/index.js
+          ${{ github.event_name == 'schedule' && '--loop' || '' }}
+          ${{ github.event_name == 'workflow_dispatch' && inputs.loop_minutes > 0 && format('--loop {0}', inputs.loop_minutes) || '' }}
           ${{ inputs.dry_run == true && '--dry-run' || '' }}
           ${{ inputs.verbose == true && '--verbose' || '' }}
 
