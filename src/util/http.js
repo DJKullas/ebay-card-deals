@@ -37,7 +37,11 @@ export function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-/** Serialises calls so that at least `minIntervalMs` passes between them. */
+/**
+ * Spaces call *starts* at least `minIntervalMs` apart (a "1 request/second"
+ * limit is about starts). Calls may overlap in flight, so response latency
+ * doesn't add to the gap — callers that want throughput run a few in parallel.
+ */
 export class RateLimiter {
   constructor(minIntervalMs) {
     this.minIntervalMs = minIntervalMs;
@@ -46,14 +50,12 @@ export class RateLimiter {
   }
 
   schedule(fn) {
-    const run = async () => {
+    const started = this.queue.then(async () => {
       const wait = this.last + this.minIntervalMs - Date.now();
       if (wait > 0) await sleep(wait);
       this.last = Date.now();
-      return fn();
-    };
-    const p = this.queue.then(run, run);
-    this.queue = p.catch(() => {});
-    return p;
+    });
+    this.queue = started.catch(() => {});
+    return started.then(fn);
   }
 }

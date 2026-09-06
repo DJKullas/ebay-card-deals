@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as config from '../config/scan.config.js';
+import { searchPlan } from '../src/targets.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -37,7 +38,7 @@ test('config sanity', () => {
   }
   assert.ok(config.targets.length > 0);
   for (const t of config.targets) {
-    assert.ok(t.key && t.label && t.searchQuery && Array.isArray(t.conditionIds), `${t.key}: incomplete`);
+    assert.ok(t.key && t.label && Array.isArray(t.searchTerms) && t.searchTerms.length && Array.isArray(t.conditionIds), `${t.key}: incomplete`);
     assert.ok(t.categoryKeys.length, `${t.key}: categoryKeys`);
     for (const k of t.categoryKeys) assert.ok(config.categories.some((c) => c.key === k), `${t.key}: unknown category ${k}`);
     assert.ok(Object.keys(t.require ?? {}).length, `${t.key}: require`);
@@ -48,7 +49,7 @@ test('config sanity', () => {
 });
 
 test('RapidAPI mandatory usage (first page of every search) fits the plan', () => {
-  const searches = config.targets.reduce((n, t) => n + t.categoryKeys.length, 0);
+  const searches = searchPlan(config.targets, config.categories).length;
   const runsPerMonth = (31 * 24 * 60) / config.schedule.scanIntervalMinutes;
   assert.ok(searches * runsPerMonth <= config.ebay.rapidApiMonthlyLimit, `${searches} searches/run × ${runsPerMonth} runs exceeds ${config.ebay.rapidApiMonthlyLimit}`);
   assert.ok(config.ebay.maxPagesPerSearch >= 1 && config.ebay.extraPageBurst >= 1);

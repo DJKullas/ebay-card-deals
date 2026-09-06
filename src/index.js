@@ -1,8 +1,8 @@
-#!/usr/bin/env node
+﻿#!/usr/bin/env node
 /**
  * Entry point. One run = one scan:
  *   1. pull eBay listings ending in [minMinutesLeft, lookaheadMinutes] for every
- *      target × category (PSA 10 Pokemon, PSA 10 sports, autographed sports)
+ *      target Ã— category (PSA 10 Pokemon, PSA 10 sports, autographed sports)
  *   2. keep the ones that satisfy a target (grade / autograph, parsed from the title)
  *   3. price each one against the price guide(s) with a confidence score
  *   4. alert on anything confidently priced and sufficiently below market
@@ -55,7 +55,7 @@ async function main() {
   console.log(`Loop mode: scanning every ${config.schedule.scanIntervalMinutes} min for ${LOOP_MINUTES} min (until ${new Date(endAt).toISOString()})`);
   for (let n = 1; ; n += 1) {
     const tick = Date.now();
-    console.log(`\n===== scan ${n} · ${new Date(tick).toISOString()} =====`);
+    console.log(`\n===== scan ${n} Â· ${new Date(tick).toISOString()} =====`);
     try {
       await scanOnce();
     } catch (err) {
@@ -88,7 +88,7 @@ async function scanOnce() {
   const pcClient = new PriceChartingClient({ tokens: pcTokens, minMsBetweenRequests: config.pricing.pricecharting.minMsBetweenRequests, cache: store });
   const psa = new PsaCertClient({ token: env.PSA_API_TOKEN, cache: store });
 
-  // One eBay search per (target, category) pair.
+  // One eBay search per category (all of its targets OR-ed together).
   const searches = searchPlan(config.targets, config.categories);
 
   // Optional RapidAPI spending is gated so the mandatory searches (first page
@@ -112,7 +112,7 @@ async function scanOnce() {
     return providerImpls[p];
   });
   if (!pcTokens.pricecharting && !pcTokens.sportscardspro) {
-    console.warn('PRICECHARTING_TOKEN not set — PriceCharting provider will be skipped; only the eBay active-listing fallback is available.');
+    console.warn('PRICECHARTING_TOKEN not set â€” PriceCharting provider will be skipped; only the eBay active-listing fallback is available.');
   }
 
   const notifiers = [new EmailNotifier(env), new DiscordNotifier(env)].filter((n) => n.enabled);
@@ -123,11 +123,11 @@ async function scanOnce() {
   const optionalPerRun = (providers.some((p) => p.name === 'ebay_active') ? config.pricing.ebayActive.maxLookupsPerRun : 0) + (config.ebay.detailFetch === 'never' ? 0 : config.ebay.maxDetailFetches);
   const estMonthly = runsPerMonth * mandatoryPerRun;
   console.log(
-    `RapidAPI usage: ${mandatoryPerRun} mandatory requests/run × ${runsPerMonth} runs/month ≈ ${estMonthly.toLocaleString()} of ${config.ebay.rapidApiMonthlyLimit.toLocaleString()}; ` +
-      `spare quota goes to extra search pages${optionalPerRun ? ` and up to ${optionalPerRun} optional lookups/run` : ''}${config.ebay.protectQuota ? '' : ' (protectQuota OFF — overage possible)'}`,
+    `RapidAPI usage: ${mandatoryPerRun} mandatory requests/run Ã— ${runsPerMonth} runs/month â‰ˆ ${estMonthly.toLocaleString()} of ${config.ebay.rapidApiMonthlyLimit.toLocaleString()}; ` +
+      `spare quota goes to extra search pages${optionalPerRun ? ` and up to ${optionalPerRun} optional lookups/run` : ''}${config.ebay.protectQuota ? '' : ' (protectQuota OFF â€” overage possible)'}`,
   );
   if (estMonthly > config.ebay.rapidApiMonthlyLimit) {
-    console.warn(`  WARNING: mandatory searches alone exceed the plan by ~${(estMonthly - config.ebay.rapidApiMonthlyLimit).toLocaleString()} requests/month — remove a target/category or scan less often.`);
+    console.warn(`  WARNING: mandatory searches alone exceed the plan by ~${(estMonthly - config.ebay.rapidApiMonthlyLimit).toLocaleString()} requests/month â€” remove a target/category or scan less often.`);
   }
 
   // --- 1. fetch listings ending soon --------------------------------------
@@ -150,8 +150,8 @@ async function scanOnce() {
       query: s.query,
       categoryIds: s.category.ebayCategoryIds,
       buyingOptions: config.ebay.buyingOptions,
-      conditionIds: s.target.conditionIds,
-      minPrice: s.target.minPrice,
+      conditionIds: s.conditionIds,
+      minPrice: s.minPrice,
       endBefore: windowEnd,
       sort: 'endingSoonest',
       limit: pageSize,
@@ -183,10 +183,10 @@ async function scanOnce() {
   }
   for (const s of progress) {
     const short = s.fetched < s.total ? ` (${s.total - s.fetched} later-ending listings not fetched)` : '';
-    console.log(`  ${s.category.label} / ${s.target.label} ("${s.query}"): ${s.fetched} of ${s.total} listings in ${s.pages} page(s)${short}`);
+    console.log(`  ${s.category.label} ("${s.query}"${s.minPrice ? `, bid â‰¥ $${s.minPrice}` : ''}): ${s.fetched} of ${s.total} listings in ${s.pages} page(s)${short}`);
   }
   if (extraUsed || progress.some((s) => s.fetched < s.total)) {
-    console.log(`  extra pages: ${extraUsed} used of ${Number.isFinite(extraAllowed) ? extraAllowed : '∞'} allowed by quota this run`);
+    console.log(`  extra pages: ${extraUsed} used of ${Number.isFinite(extraAllowed) ? extraAllowed : 'âˆž'} allowed by quota this run`);
   }
 
   // --- 2. filter to the cards we care about -------------------------------
@@ -240,24 +240,37 @@ async function scanOnce() {
   const deals = [];
   const stats = { priced: 0, confident: 0, unpriced: 0, lowConfidence: 0, noValue: 0, noCardNumber: 0, tooLate: 0, detailFetches: 0, errors: 0, truncated: 0 };
   let processed = 0;
+  let nextIdx = 0;
+  let stopped = false;
 
-  for (const cand of candidates) {
-    if (processed >= LIMIT) {
-      stats.truncated = candidates.length - processed;
-      break;
+  // A few listings are priced concurrently so the guide's 1 req/s limit is
+  // actually reached (each call has ~2s of latency); the RateLimiter inside the
+  // client still spaces the requests. Soonest-ending listings go first.
+  const worker = async () => {
+    while (!stopped && nextIdx < candidates.length) {
+      if (processed >= LIMIT) {
+        stopped = true;
+        break;
+      }
+      if ((Date.now() - startedAt) / 1000 > config.pricing.maxRunSeconds) {
+        stopped = true;
+        console.warn(`  time budget (${config.pricing.maxRunSeconds}s) reached; ${candidates.length - nextIdx} listings left unpriced`);
+        break;
+      }
+      const cand = candidates[nextIdx++];
+      // Pricing takes a while; by now this one may no longer leave enough time to look at it.
+      if (cand.listing.endDate.getTime() - Date.now() < minLeftMs) {
+        stats.tooLate += 1;
+        continue;
+      }
+      processed += 1;
+      await priceAndEvaluate(cand);
     }
-    if ((Date.now() - startedAt) / 1000 > config.pricing.maxRunSeconds) {
-      stats.truncated = candidates.length - processed;
-      console.warn(`  time budget (${config.pricing.maxRunSeconds}s) reached; ${stats.truncated} listings left unpriced`);
-      break;
-    }
-    // Pricing takes a while; by now this one may no longer leave enough time to look at it.
-    if (cand.listing.endDate.getTime() - Date.now() < minLeftMs) {
-      stats.tooLate += 1;
-      continue;
-    }
-    processed += 1;
+  };
+  await Promise.all(Array.from({ length: Math.max(1, config.pricing.concurrency ?? 1) }, worker));
+  stats.truncated = candidates.length - nextIdx;
 
+  async function priceAndEvaluate(cand) {
     try {
       // No card number in the title? We can't be confident, so either pull the
       // item specifics (if allowed) or skip without spending a price-guide call.
@@ -267,14 +280,14 @@ async function scanOnce() {
           const enriched = await enrichWithDetails(cand, ebay, psa);
           if (enriched?.gradeMismatch) {
             if (VERBOSE) console.log(`  skip (specifics say ${enriched.gradeMismatch}): ${cand.listing.title}`);
-            continue;
+            return;
           }
           if (enriched) cand.parsed = enriched.parsed;
         }
         if (!cand.parsed.cardNumber) {
           stats.noCardNumber += 1;
           if (VERBOSE) console.log(`  skip (no card number): ${cand.listing.title}`);
-          continue;
+          return;
         }
       }
 
@@ -289,7 +302,7 @@ async function scanOnce() {
           cand.parsed = enriched.parsed;
           if (enriched.gradeMismatch) {
             if (VERBOSE) console.log(`  skip (specifics say ${enriched.gradeMismatch}): ${cand.listing.title}`);
-            continue;
+            return;
           }
           priced = await priceListing(cand, providers);
         }
@@ -298,7 +311,7 @@ async function scanOnce() {
       if (!priced) {
         stats.unpriced += 1;
         if (VERBOSE) console.log(`  no price: ${cand.listing.title}`);
-        continue;
+        return;
       }
       stats.priced += 1;
       if (priced.marketValue === null) stats.noValue += 1;
@@ -313,34 +326,47 @@ async function scanOnce() {
             (VERBOSE ? `\n         q="${priced.query ?? ''}" -> ${priced.matchedName ?? '-'} (${(priced.reasons ?? []).join('; ')})` : ''),
         );
       }
-      if (result.isDeal) deals.push({ ...cand, priced, eval: result });
+      if (result.isDeal) {
+        const deal = { ...cand, priced, eval: result };
+        deals.push(deal);
+        // Minutes matter: send now rather than after the whole scan is priced.
+        if (config.notify.mode === 'each') await notify([deal]);
+      }
     } catch (err) {
       stats.errors += 1;
       console.warn(`  error pricing "${cand.listing.title}": ${err.message}`);
     }
   }
 
-  // --- 4. notify -------------------------------------------------------------
+  // --- 4. notify (digest mode) --------------------------------------------
   deals.sort((a, b) => b.eval.discountPct - a.eval.discountPct);
   if (deals.length) {
     console.log(`\n${deals.length} deal(s):\n${renderText(deals, { timezone: config.notify.timezone })}\n`);
-    if (!DRY_RUN) {
-      const batches = config.notify.mode === 'each' ? deals.map((d) => [d]) : [deals];
-      for (const n of notifiers) {
-        for (const batch of batches) {
-          try {
-            await n.send(batch, { subjectPrefix: config.notify.subjectPrefix, timezone: config.notify.timezone });
-            console.log(`  sent ${batch.length} deal(s) via ${n.name}`);
-          } catch (err) {
-            console.error(`  ${n.name} failed: ${err.message}`);
-            process.exitCode = 1;
-          }
-        }
-      }
-      for (const d of deals) store.set(`alerted:${d.listing.itemId}`, { at: Date.now(), total: d.eval.totalCost }, config.notify.dedupeHours * 3600 * 1000);
-    }
+    if (config.notify.mode !== 'each') await notify(deals);
   } else {
     console.log('No deals this run.');
+  }
+
+  async function notify(batch) {
+    if (DRY_RUN) return;
+    // Re-check at send time: pricing may have eaten into the lead time.
+    const stillUseful = batch.filter((d) => d.listing.endDate.getTime() - Date.now() >= minLeftMs);
+    if (stillUseful.length < batch.length) {
+      stats.tooLate += batch.length - stillUseful.length;
+      console.warn(`  ${batch.length - stillUseful.length} deal(s) dropped: under ${config.schedule.minMinutesLeft} min left by the time they were priced`);
+    }
+    if (!stillUseful.length) return;
+    for (const n of notifiers) {
+      try {
+        await n.send(stillUseful, { subjectPrefix: config.notify.subjectPrefix, timezone: config.notify.timezone });
+        console.log(`  sent ${stillUseful.length} deal(s) via ${n.name}`);
+      } catch (err) {
+        console.error(`  ${n.name} failed: ${err.message}`);
+        process.exitCode = 1;
+      }
+    }
+    for (const d of stillUseful) store.set(`alerted:${d.listing.itemId}`, { at: Date.now(), total: d.eval.totalCost }, config.notify.dedupeHours * 3600 * 1000);
+    store.save();
   }
 
   store.save();
@@ -404,7 +430,7 @@ async function enrichWithDetails(cand, ebay, psa) {
     const cert = await psa.lookup(parsed.certNumber);
     if (cert) {
       if (cert.grade !== cand.grade.grade) return { parsed, gradeMismatch: `PSA cert ${cert.cert} is grade ${cert.grade}` };
-      // PSA's description is authoritative — feed it in as specifics.
+      // PSA's description is authoritative â€” feed it in as specifics.
       if (cert.subject) specifics['Card Name'] = cert.subject;
       if (cert.brand || cert.variety) specifics['Set'] = [cert.brand, cert.variety].filter(Boolean).join(' ');
       if (cert.cardNumber) specifics['Card Number'] = cert.cardNumber;

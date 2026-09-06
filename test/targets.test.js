@@ -75,12 +75,18 @@ test('stricter rules win when a listing satisfies several targets', () => {
   assert.deepEqual(mergeDealRules(config.deal, [psa10]), config.deal);
 });
 
-test('searchPlan: one eBay search per target × category, with the category prefix', () => {
+test('searchPlan: one eBay search per category with its targets OR-ed together', () => {
   const plan = searchPlan(config.targets, config.categories);
-  assert.equal(plan.length, 3);
-  assert.ok(plan.some((p) => p.category.key === 'pokemon' && p.query === 'pokemon psa 10'));
-  assert.ok(plan.some((p) => p.category.key === 'sports' && p.query === 'psa 10'));
-  assert.ok(plan.some((p) => p.category.key === 'sports' && p.target.key === 'auto' && p.query === '(auto,autograph)'));
+  assert.equal(plan.length, config.categories.length);
+  const pokemon = plan.find((p) => p.category.key === 'pokemon');
+  assert.equal(pokemon.query, 'pokemon psa 10');
+  assert.deepEqual(pokemon.targets.map((t) => t.key), ['psa10']);
+  assert.deepEqual(pokemon.conditionIds, ['2750']);
+  const sportsPlan = plan.find((p) => p.category.key === 'sports');
+  assert.equal(sportsPlan.query, '(psa 10,auto,autograph)');
+  assert.deepEqual(sportsPlan.targets.map((t) => t.key), ['psa10', 'auto']);
+  assert.deepEqual(sportsPlan.conditionIds, [], 'targets disagree on condition → no filter');
+  assert.equal(sportsPlan.minPrice, 20);
 });
 
 test('a non-auto listing is never priced as the autograph product', () => {

@@ -31,14 +31,31 @@ export function mergeDealRules(base, targets) {
   return out;
 }
 
-/** One eBay search per (target, category) pair the target applies to. */
+/**
+ * ONE eBay search per category, covering every target that applies to it, so
+ * the RapidAPI cost per scan is the number of categories (the API rejects
+ * multiple category ids in one call, so categories can't be merged further).
+ * The targets' search terms are OR-ed with eBay's "(a,b,c)" syntax; the
+ * condition filter is only kept if every target agrees on it; the price floor
+ * is the lowest of the targets'. Which target(s) a listing actually satisfies
+ * is decided later from the parsed title (`matchesTarget`).
+ */
 export function searchPlan(targets, categories) {
   const plan = [];
-  for (const target of targets) {
-    for (const key of target.categoryKeys) {
-      const category = categories.find((c) => c.key === key);
-      if (!category) throw new Error(`target "${target.key}" references unknown category "${key}"`);
-      plan.push({ target, category, query: [category.queryPrefix, target.searchQuery].filter(Boolean).join(' ') });
+  for (const category of categories) {
+    const applicable = targets.filter((t) => t.categoryKeys.includes(category.key));
+    if (!applicable.length) continue;
+    const terms = [...new Set(applicable.flatMap((t) => t.searchTerms))];
+    const group = terms.length > 1 ? `(${terms.join(',')})` : terms[0];
+    const query = [category.queryPrefix, group].filter(Boolean).join(' ');
+    const conditionSets = applicable.map((t) => JSON.stringify([...(t.conditionIds ?? [])].sort()));
+    const conditionIds = new Set(conditionSets).size === 1 ? [...(applicable[0].conditionIds ?? [])] : [];
+    const minPrice = Math.min(...applicable.map((t) => t.minPrice ?? 0));
+    plan.push({ category, targets: applicable, query, conditionIds, minPrice: minPrice || undefined });
+  }
+  for (const t of targets) {
+    for (const key of t.categoryKeys) {
+      if (!categories.some((c) => c.key === key)) throw new Error(`target "${t.key}" references unknown category "${key}"`);
     }
   }
   return plan;

@@ -6,24 +6,24 @@
 
 /** Timing */
 export const schedule = {
-  // How often the job runs. This MUST match the cron in
-  // .github/workflows/scan.yml (a unit test checks that they agree).
-  // 15 min keeps the 3 eBay searches per run (see `targets`) inside a 10,000
-  // request/month RapidAPI plan: 2,880 runs × 3 = 8,640.
-  scanIntervalMinutes: 15,
+  // How often to scan. This is THE cost/tightness knob: each scan costs one
+  // RapidAPI request per category (2), so requests/month ≈ 2 × 43,200 / interval.
+  //   10 min → 8,640  (fits the 10,000/month Pro plan)   alerts arrive 5-16 min out
+  //    5 min → 17,280 (needs the Ultra plan, or ~$65/mo overage)  alerts 5-11 min out
+  // Auction bids arrive in the last minutes, so the closer to the end we look
+  // the less "below market" is an illusion — but every halving of the interval
+  // doubles the eBay bill. Change lookaheadMinutes together with this.
+  scanIntervalMinutes: 10,
 
   // An alert is only useful if there is time to look at the card before the
-  // auction ends. Listings ending sooner than this are ignored, and anything
-  // that drifts under it while the run is pricing is dropped too.
+  // auction ends. Listings ending sooner than this are ignored, and a deal is
+  // dropped rather than sent if pricing pushed it under this.
   minMinutesLeft: 5,
 
-  // How far ahead to look. Each run covers [minMinutesLeft, lookaheadMinutes]
-  // = 5-25 min. lookahead must be >= minMinutesLeft + scanIntervalMinutes so
-  // consecutive runs leave no gap; the extra 5 min of overlap absorbs late
-  // cron ticks (GitHub's are often several minutes late) and gives every
-  // listing a second look. Duplicates are cheap: guide prices are cached and
-  // alerted items are deduped.
-  lookaheadMinutes: 25,
+  // How far ahead to look. Each scan covers [minMinutesLeft, lookaheadMinutes]
+  // = 5-16 min. Must be >= minMinutesLeft + scanIntervalMinutes so consecutive
+  // scans leave no gap; the extra minute covers a scan starting a little late.
+  lookaheadMinutes: 16,
 
   // GitHub's cron scheduler is far too erratic for this (it fired a "*/15"
   // schedule 6 times in 14 hours), so the workflow instead runs ONE long job
@@ -116,20 +116,24 @@ export const categories = [
 ];
 
 /**
- * What we are hunting for. Each target runs ONE eBay search per category it
- * applies to, so the mandatory RapidAPI cost per run = number of
- * target×category pairs (plus extra pages when quota allows, see `ebay`).
- * A listing is kept when it satisfies at least one target's
- * `require` (parsed from the title); if it satisfies several, the strictest
- * deal rules among them apply.
+ * What we are hunting for. All targets that apply to a category share ONE
+ * eBay search (their search terms are OR-ed: sports = "(psa 10,auto,autograph)"),
+ * so the mandatory RapidAPI cost per scan = number of categories (plus extra
+ * pages when quota allows, see `ebay`). A listing is kept when it satisfies at
+ * least one target's `require` (parsed from the title); if it satisfies
+ * several, the strictest deal rules among them apply.
  *
- *   searchQuery   eBay keywords (fuzzy; `require` is what really enforces it)
+ *   searchTerms   eBay keywords (fuzzy; `require` is what really enforces it).
+ *                 "auto" alone misses titles that only say "Autograph".
  *   conditionIds  eBay condition filter. 2750 = Graded, 4000 = Ungraded for
- *                 trading cards; [] = any condition
- *   minPrice      skip auctions whose current bid is below this (USD). Cuts
- *                 the $0.99-start noise that eats search pages; a card worth
- *                 the minimum market value below is rarely a real deal at a
- *                 lower bid this close to the end anyway.
+ *                 trading cards; [] = any. Only applied to the shared search if
+ *                 every target of the category agrees.
+ *   minPrice      skip auctions whose current bid is below this (USD). The
+ *                 lowest across a category's targets is used. Cuts the
+ *                 $0.99-start noise that eats search pages; with bids arriving
+ *                 in the last minutes a sub-$20 bid on a card worth $25+ is not
+ *                 a deal signal anyway. At $20, Sunday-evening peak is ~100
+ *                 sports + ~60 Pokémon listings per 5 min, i.e. one page each.
  *   require       { grader, grade } = that exact grade
  *                 { autograph: true } = title says auto/autograph/signed;
  *                 any grade, or raw (priced against the guide's ungraded value)
@@ -137,16 +141,16 @@ export const categories = [
  *                 listing is dropped, even if another target also matches it)
  *   deal          overrides for `deal` below (stricter for harder-to-match cards)
  *
- * To also watch PSA 9s, add { key:'psa9', searchQuery:'psa 9', require:{grader:'PSA', grade:9}, ... }.
+ * To also watch PSA 9s, add { key:'psa9', searchTerms:['psa 9'], require:{grader:'PSA', grade:9}, ... }.
  */
 export const targets = [
   {
     key: 'psa10',
     label: 'PSA 10',
     categoryKeys: ['pokemon', 'sports'],
-    searchQuery: 'psa 10',
+    searchTerms: ['psa 10'],
     conditionIds: ['2750'],
-    minPrice: 10,
+    minPrice: 20,
     require: { grader: 'PSA', grade: 10 },
   },
   {
@@ -154,10 +158,9 @@ export const targets = [
     label: 'Autograph',
     // Pokemon has no pack-pulled autographs (and the guide has no auto products).
     categoryKeys: ['sports'],
-    // eBay's OR syntax; "auto" alone misses titles that only say "Autograph".
-    searchQuery: '(auto,autograph)',
+    searchTerms: ['auto', 'autograph'],
     conditionIds: [],
-    minPrice: 15,
+    minPrice: 20,
     require: { autograph: true },
     // Only pack-pulled, manufacturer-certified autos can be priced against the
     // guide. Anything hand-signed / third-party authenticated (JSA, BAS,
@@ -225,14 +228,19 @@ export const pricing = {
   // no longer have spare with three searches per run, it can't price raw
   // cards, and asks are a weaker signal than the guide.
   providers: ['pricecharting'],
-  // Hard caps so a run finishes inside the cron window. At ~1.1s per new
-  // listing the time budget is normally what stops a busy run.
+  // Hard caps so a scan finishes before the next one starts. At ~1.1s per new
+  // listing the time budget is what stops a busy scan (~400 listings); the
+  // soonest-ending are priced first and the rest roll over to the next scan.
   maxListingsPerRun: 500,
-  maxRunSeconds: 600,
+  maxRunSeconds: 480,
   // PriceCharting values update daily; cache lookups this long.
   cacheTtlHours: 24,
+  // Listings priced in parallel. The guide allows 1 request/second (the
+  // RateLimiter enforces that on request starts) and a call takes 1-4s, so
+  // ~5 in flight keeps the limiter busy; more buys nothing.
+  concurrency: 5,
   pricecharting: {
-    // PriceCharting allows 1 request/second.
+    // PriceCharting allows 1 request/second (request starts, see RateLimiter).
     minMsBetweenRequests: 1100,
   },
   // Fallback: what other sellers are currently asking for the same eBay
@@ -251,8 +259,10 @@ export const pricing = {
 
 /** Notifications */
 export const notify = {
-  // 'digest' = one email per run listing every deal, 'each' = one email per deal
-  mode: 'digest',
+  // 'each'   = every deal is emailed the moment it is found (minutes matter
+  //            when the auction ends in 5-16 of them)
+  // 'digest' = one email per scan listing every deal, sent when the scan ends
+  mode: 'each',
   timezone: 'America/New_York',
   subjectPrefix: '[Card Deals]',
   // Don't re-alert the same eBay item within this many hours.
