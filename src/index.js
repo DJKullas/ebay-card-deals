@@ -50,7 +50,8 @@ async function main() {
   // --- clients -------------------------------------------------------------
   const ebay = new EbayClient({ apiKey: env.RAPIDAPI_KEY, tld: config.ebay.marketplaceTld });
   const pcTokens = {
-    pricecharting: env.PRICECHARTING_TOKEN || '',
+    // One PriceCharting token works on both pricecharting.com and sportscardspro.com.
+    pricecharting: env.PRICECHARTING_TOKEN || env.SPORTSCARDSPRO_TOKEN || '',
     sportscardspro: env.SPORTSCARDSPRO_TOKEN || env.PRICECHARTING_TOKEN || '',
   };
   const pcClient = new PriceChartingClient({ tokens: pcTokens, minMsBetweenRequests: config.pricing.pricecharting.minMsBetweenRequests, cache: store });

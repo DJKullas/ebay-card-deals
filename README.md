@@ -69,8 +69,8 @@ Add these repository secrets (Settings → Secrets and variables → Actions):
 | --- | --- | --- |
 | `RAPIDAPI_KEY` | yes | RapidAPI key subscribed to Real-Time eBay Data |
 | `PRICECHARTING_TOKEN` | recommended | 40-char token from pricecharting.com → Subscription → API/Download |
-| `SPORTSCARDSPRO_TOKEN` | recommended | same, from sportscardspro.com (separate subscription). Falls back to `PRICECHARTING_TOKEN` if blank |
-| `SMTP_HOST` `SMTP_PORT` `SMTP_SECURE` `SMTP_USER` `SMTP_PASS` `EMAIL_FROM` `EMAIL_TO` | yes (for email) | Gmail: `smtp.gmail.com`, `465`, `true`, your address, an [App Password](https://myaccount.google.com/apppasswords) |
+| `SPORTSCARDSPRO_TOKEN` | recommended | one PriceCharting token works on both pricecharting.com and sportscardspro.com; either variable falls back to the other |
+| `SMTP_HOST` `SMTP_PORT` `SMTP_USER` `SMTP_PASS` `EMAIL_FROM` `EMAIL_TO` | yes (for email) | Gmail: `smtp.gmail.com`, `587`, your address, an [App Password](https://myaccount.google.com/apppasswords). `SMTP_SECURE` is optional (inferred from port). Same setup as `tesla-inventory-monitor` |
 | `DISCORD_WEBHOOK_URL` | optional | instant phone pushes; can be used instead of or alongside email |
 | `PSA_API_TOKEN` | optional | from psacard.com/publicapi |
 

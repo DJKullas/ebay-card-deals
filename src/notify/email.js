@@ -3,15 +3,21 @@ import { renderEmailHtml, renderText } from './format.js';
 
 export class EmailNotifier {
   constructor(env) {
-    this.enabled = Boolean(env.SMTP_HOST && env.SMTP_USER && env.SMTP_PASS && env.EMAIL_TO);
+    // Gmail app passwords are shown as "xxxx xxxx xxxx xxxx"; the spaces are cosmetic.
+    const pass = (env.SMTP_PASS || env.SMTP_PASSWORD || '').replace(/\s+/g, '');
+    const to = env.EMAIL_TO || env.SMTP_USER;
+    this.enabled = Boolean(env.SMTP_HOST && env.SMTP_USER && pass && to);
     if (!this.enabled) return;
-    this.from = env.EMAIL_FROM || env.SMTP_USER;
-    this.to = env.EMAIL_TO;
+    this.from = env.EMAIL_FROM || env.SMTP_FROM || env.SMTP_USER;
+    this.to = to;
+    const port = Number(env.SMTP_PORT || 587);
+    // 465 = implicit TLS, 587 = STARTTLS. SMTP_SECURE overrides if set.
+    const secure = env.SMTP_SECURE ? String(env.SMTP_SECURE) !== 'false' : port === 465;
     this.transport = nodemailer.createTransport({
       host: env.SMTP_HOST,
-      port: Number(env.SMTP_PORT || 465),
-      secure: String(env.SMTP_SECURE ?? 'true') !== 'false',
-      auth: { user: env.SMTP_USER, pass: env.SMTP_PASS },
+      port,
+      secure,
+      auth: { user: env.SMTP_USER, pass },
     });
   }
 
