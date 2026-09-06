@@ -8,6 +8,15 @@
  */
 import { normaliseCardNumber, tokenise, normaliseText } from './parse.js';
 
+// How the price guides label autographed products: "[Autograph Red Wave]",
+// "... Rookie Autographs", "[Signature Orange Mosaic]", "... Rookie Signature Memorabilia".
+const PRODUCT_AUTO_RE = /\b(auto|autos|autograph|autographs|autographed|signature|signatures|signed)\b/i;
+
+/** Is this guide product an autographed card? */
+export function isAutographProduct(product) {
+  return PRODUCT_AUTO_RE.test(product['product-name'] ?? '') || PRODUCT_AUTO_RE.test(product['console-name'] ?? '');
+}
+
 const CATEGORY_PREFIX_RE = /^(pokemon|baseball cards|basketball cards|football cards|hockey cards|soccer cards|golf cards|wrestling cards|racing cards|boxing cards|mma cards|ufc cards|tennis cards|multi-sport cards|non-sport cards|magic|yugioh|one piece|lorcana|digimon|dragon ball|weiss schwarz|metazoo|flesh and blood|star wars|marvel|garbage pail kids)\b/i;
 
 const WEIGHTS = {
@@ -20,7 +29,9 @@ const WEIGHTS = {
 
 // Seller shorthand -> price guide wording.
 const SYNONYMS = {
-  autograph: ['auto', 'au', 'autographed', 'signed'],
+  autograph: ['auto', 'au', 'autographed', 'signed', 'autographs', 'autos'],
+  autographs: ['auto', 'au', 'autographed', 'signed', 'autograph', 'autos'],
+  signature: ['auto', 'autograph', 'autographed', 'signed', 'signatures'],
   refractor: ['ref', 'refractors'],
   prizm: ['prism', 'prizms'],
   '1st': ['first'],
@@ -62,8 +73,19 @@ export function matchProduct(listing, products, ctx) {
   const titleTokens = new Set(listing.tokens);
 
   const scored = [];
+  let autoMismatches = 0;
   for (const product of products) {
     if (ctx.productFilter && !ctx.productFilter.test(product['console-name'] ?? '')) continue;
+
+    // Hard rule, checked before everything else (including the ePID shortcut,
+    // since sellers pick the wrong catalogue product often enough): an
+    // autographed listing may only be priced as an autographed product and a
+    // non-auto listing never as one. Pricing a base card against its auto
+    // version is the single easiest way to invent a fake 90%-off deal.
+    if (Boolean(listing.isAutograph) !== isAutographProduct(product)) {
+      autoMismatches += 1;
+      continue;
+    }
 
     // Exact eBay catalogue match beats everything.
     if (ctx.epid && product.epid && String(product.epid) === String(ctx.epid)) {
@@ -167,7 +189,11 @@ export function matchProduct(listing, products, ctx) {
   }
 
   scored.sort((a, b) => b.score - a.score);
-  if (!scored.length) return { product: null, confidence: 0, reasons: ['no candidates survived'], candidates: [] };
+  if (!scored.length) {
+    const reasons = ['no candidates survived'];
+    if (autoMismatches) reasons.push(`${autoMismatches} rejected: listing ${listing.isAutograph ? 'is' : 'is not'} an autograph, product ${listing.isAutograph ? 'is not' : 'is'}`);
+    return { product: null, confidence: 0, reasons, candidates: [] };
+  }
 
   const best = scored[0];
   let confidence = clamp(best.score, 0, 1);

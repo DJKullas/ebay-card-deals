@@ -44,6 +44,11 @@ const CODE_NUMBER_RE = /\b([A-Z]{1,6}-[A-Z0-9]{1,6})\b/;
 // Note: serial numbering like "/199" or "24/99" is NOT a card number in sports;
 // only '#'-prefixed or CODE-style numbers are used there.
 const CERT_RE = /\b(?:cert(?:ification)?(?:\s*(?:no|number|#))?[\s:#-]*)?(\d{8,9})\b/i;
+// Words sellers (and the price guides) use for an autographed card. "RPA" =
+// rookie patch auto. Deliberately does not include "signature" alone: it is a
+// product-line word too (e.g. "Signature Series").
+export const AUTOGRAPH_RE = /\b(auto|autos|autograph|autographs|autographed|signed|signatures|rpa|on[\s-]?card\s+auto)\b/i;
+const GRADER_MENTION_RE = /\b(psa|bgs|cgc|sgc|beckett|hga|gma|slab|slabbed|graded|gem\s*(?:mint|mt)\s*\d)\b/i;
 
 /**
  * @param {string} title
@@ -58,6 +63,10 @@ export function parseListing(title, { kind = 'sports', specifics = {} } = {}) {
   const cardNum = detectCardNumber(clean, kind, spec);
   const certNumber = detectCert(clean, spec);
   const isJapanese = /\b(japanese|japan|jp|jpn)\b/i.test(clean) || /japan/i.test(spec.language ?? '') || /japan/i.test(spec['country of origin'] ?? '');
+  const isAutograph = AUTOGRAPH_RE.test(clean) || /^yes$/i.test(spec.autographed ?? '') || /\bauto/i.test(spec.features ?? '');
+  // "Graded" without a readable grade (truncated title, "PSA 20", "SGC …"):
+  // we must not price it as a raw card.
+  const mentionsGrader = GRADER_MENTION_RE.test(clean) || Boolean(spec['professional grader']) || /graded/i.test(spec.condition ?? '');
   const tokens = tokenise(clean);
   const variantTokens = tokens.filter((t) => VARIANT_HINTS.has(t));
 
@@ -71,12 +80,29 @@ export function parseListing(title, { kind = 'sports', specifics = {} } = {}) {
     cardNumberRaw: cardNum?.raw ?? null,
     certNumber,
     isJapanese,
+    isAutograph,
+    mentionsGrader,
     tokens,
     variantTokens,
     specifics: spec,
     // A compact search query for the price guide.
-    query: buildQuery({ tokens, year, cardNumber: cardNum, kind, isJapanese, spec }),
+    query: buildQuery({ tokens, year, cardNumber: cardNum, kind, isJapanese, isAutograph, spec }),
   };
+}
+
+/**
+ * Which price-guide field to read for a parsed listing's grade.
+ * @param {{ grader: string|null, grade: number|null }} parsed
+ * @param {Record<string,string>} table  config.gradePriceKeys
+ * @returns {{ grader:string|null, grade:number|null, priceKey:string, label:string } | null}  null = no price for this grade
+ */
+export function resolveGrade(parsed, table) {
+  if (!parsed.grader || parsed.grade === null || parsed.grade === undefined) {
+    if (parsed.mentionsGrader) return null;
+    return table.raw ? { grader: null, grade: null, priceKey: table.raw, label: 'Raw' } : null;
+  }
+  const key = table[`${parsed.grader} ${parsed.grade}`] ?? table[String(parsed.grade)];
+  return key ? { grader: parsed.grader, grade: parsed.grade, priceKey: key, label: `${parsed.grader} ${parsed.grade}` } : null;
 }
 
 // Words in a title that signal a parallel / variant. Populated from config at
@@ -171,7 +197,7 @@ export function tokenise(clean) {
     .filter((t) => t && !/^\d+\/\d+$/.test(t)); // drop "24/99" style serials from tokens
 }
 
-function buildQuery({ tokens, year, cardNumber, kind, isJapanese, spec }) {
+function buildQuery({ tokens, year, cardNumber, kind, isJapanese, isAutograph = false, spec }) {
   const words = [];
   const seen = new Set();
   const push = (w) => {
@@ -204,6 +230,9 @@ function buildQuery({ tokens, year, cardNumber, kind, isJapanese, spec }) {
     push(t);
   }
   if (kind === 'tcg' && isJapanese) push('japanese');
+  // The guide files autos under "... Autographs" sets or "[Autograph ...]"
+  // variants, so the word helps its search rank the right product first.
+  if (isAutograph) push('autograph');
   if (cardNumber) push(`#${cardNumber.value}`);
   return words.join(' ');
 }

@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 /**
  * Entry point. One run = one scan:
- *   1. pull eBay listings ending within (interval + buffer) minutes per category
- *   2. keep the ones that are in a grade we care about (PSA 10 by default)
+ *   1. pull eBay listings ending in [minMinutesLeft, lookaheadMinutes] for every
+ *      target × category (PSA 10 Pokemon, PSA 10 sports, autographed sports)
+ *   2. keep the ones that satisfy a target (grade / autograph, parsed from the title)
  *   3. price each one against the price guide(s) with a confidence score
  *   4. alert on anything confidently priced and sufficiently below market
  *
@@ -11,7 +12,8 @@
 import path from 'node:path';
 import * as config from '../config/scan.config.js';
 import { EbayClient } from './ebay/client.js';
-import { parseListing, setVariantHints } from './cards/parse.js';
+import { parseListing, setVariantHints, resolveGrade } from './cards/parse.js';
+import { matchesTarget, mergeDealRules, searchPlan } from './targets.js';
 import { PriceChartingClient } from './pricing/pricecharting.js';
 import { PriceGuideProvider } from './pricing/priceGuideProvider.js';
 import { EbayActiveProvider } from './pricing/ebayActive.js';
@@ -57,9 +59,12 @@ async function main() {
   const pcClient = new PriceChartingClient({ tokens: pcTokens, minMsBetweenRequests: config.pricing.pricecharting.minMsBetweenRequests, cache: store });
   const psa = new PsaCertClient({ token: env.PSA_API_TOKEN, cache: store });
 
-  // Optional RapidAPI spending is gated so the mandatory searches always fit
-  // inside the plan for the rest of the billing period.
-  const mandatoryPerRun = config.categories.length * config.ebay.maxPages;
+  // One eBay search per (target, category) pair.
+  const searches = searchPlan(config.targets, config.categories);
+
+  // Optional RapidAPI spending is gated so the mandatory searches (first page
+  // of each) always fit inside the plan for the rest of the billing period.
+  const mandatoryPerRun = searches.length;
   const canSpendOptional = () =>
     !config.ebay.protectQuota ||
     ebay.canSpendOptional({ intervalMinutes: config.schedule.scanIntervalMinutes, mandatoryPerRun, reserve: config.ebay.quotaReserve });
@@ -86,41 +91,80 @@ async function main() {
 
   // Rough monthly RapidAPI usage so nobody gets surprised by overage billing.
   const runsPerMonth = Math.round((30 * 24 * 60) / config.schedule.scanIntervalMinutes);
-  const perRun = config.categories.length * config.ebay.maxPages + (providers.some((p) => p.name === 'ebay_active') ? config.pricing.ebayActive.maxLookupsPerRun : 0) + (config.ebay.detailFetch === 'never' ? 0 : config.ebay.maxDetailFetches);
-  const estMonthly = runsPerMonth * perRun;
-  console.log(`RapidAPI usage estimate: up to ${perRun} requests/run × ${runsPerMonth} runs/month ≈ ${estMonthly.toLocaleString()} (plan limit ${config.ebay.rapidApiMonthlyLimit.toLocaleString()})`);
+  const optionalPerRun = (providers.some((p) => p.name === 'ebay_active') ? config.pricing.ebayActive.maxLookupsPerRun : 0) + (config.ebay.detailFetch === 'never' ? 0 : config.ebay.maxDetailFetches);
+  const estMonthly = runsPerMonth * mandatoryPerRun;
+  console.log(
+    `RapidAPI usage: ${mandatoryPerRun} mandatory requests/run × ${runsPerMonth} runs/month ≈ ${estMonthly.toLocaleString()} of ${config.ebay.rapidApiMonthlyLimit.toLocaleString()}; ` +
+      `spare quota goes to extra search pages${optionalPerRun ? ` and up to ${optionalPerRun} optional lookups/run` : ''}${config.ebay.protectQuota ? '' : ' (protectQuota OFF — overage possible)'}`,
+  );
   if (estMonthly > config.ebay.rapidApiMonthlyLimit) {
-    console.warn(`  WARNING: estimate exceeds the plan limit by ~${(estMonthly - config.ebay.rapidApiMonthlyLimit).toLocaleString()} requests/month — lower ebayActive.maxLookupsPerRun, maxPages or scan less often.`);
+    console.warn(`  WARNING: mandatory searches alone exceed the plan by ~${(estMonthly - config.ebay.rapidApiMonthlyLimit).toLocaleString()} requests/month — remove a target/category or scan less often.`);
   }
 
   // --- 1. fetch listings ending soon --------------------------------------
   const now = new Date();
-  const windowMinutes = config.schedule.scanIntervalMinutes + config.schedule.windowBufferMinutes;
-  const windowEnd = new Date(now.getTime() + windowMinutes * 60_000);
-  console.log(`Scanning listings ending between ${now.toISOString()} and ${windowEnd.toISOString()} (${windowMinutes} min)${DRY_RUN ? ' [dry run]' : ''}`);
+  const minLeftMs = config.schedule.minMinutesLeft * 60_000;
+  const windowStart = new Date(now.getTime() + minLeftMs);
+  const windowEnd = new Date(now.getTime() + config.schedule.lookaheadMinutes * 60_000);
+  console.log(
+    `Scanning listings ending between ${windowStart.toISOString()} and ${windowEnd.toISOString()} ` +
+      `(${config.schedule.minMinutesLeft}-${config.schedule.lookaheadMinutes} min from now)${DRY_RUN ? ' [dry run]' : ''}`,
+  );
 
-  const found = [];
-  for (const category of config.categories) {
-    const { total, items } = await ebay.searchAll(
-      {
-        query: category.searchQuery ?? config.ebay.searchQuery,
-        categoryIds: category.ebayCategoryIds,
-        buyingOptions: config.ebay.buyingOptions,
-        conditionIds: config.ebay.conditionIds,
-        endBefore: windowEnd,
-        sort: 'endingSoonest',
-      },
-      { maxPages: config.ebay.maxPages, pageSize: config.ebay.pageSize },
-    );
-    console.log(`  ${category.label}: ${items.length} of ${total} listings fetched`);
-    for (const listing of items) found.push({ listing, category });
+  // The same listing can come back from several searches (a PSA 10 auto is
+  // found by both the "psa 10" and the "auto" search); keep one copy.
+  const found = new Map();
+  const { pageSize } = config.ebay;
+  const progress = searches.map((s) => ({ ...s, pages: 0, fetched: 0, total: Infinity, lastPageFull: true }));
+  const fetchPage = async (s) => {
+    const { total, items } = await ebay.search({
+      query: s.query,
+      categoryIds: s.category.ebayCategoryIds,
+      buyingOptions: config.ebay.buyingOptions,
+      conditionIds: s.target.conditionIds,
+      minPrice: s.target.minPrice,
+      endBefore: windowEnd,
+      sort: 'endingSoonest',
+      limit: pageSize,
+      offset: s.pages * pageSize,
+    });
+    s.pages += 1;
+    s.total = total;
+    s.fetched += items.length;
+    s.lastPageFull = items.length >= pageSize;
+    for (const listing of items) if (!found.has(listing.itemId)) found.set(listing.itemId, { listing, category: s.category });
+  };
+  // Page 1 of every search is mandatory...
+  for (const s of progress) await fetchPage(s);
+  // ...extra pages only where a search overflowed, and only as far as spare
+  // quota allows. Whichever search covered the smallest share of its results
+  // goes first.
+  const needsMore = (s) => s.lastPageFull && s.fetched < s.total && s.pages < config.ebay.maxPagesPerSearch;
+  let extraPages = config.ebay.protectQuota
+    ? ebay.extraRequestsAllowed({ intervalMinutes: config.schedule.scanIntervalMinutes, mandatoryPerRun, reserve: config.ebay.quotaReserve, burst: config.ebay.extraPageBurst })
+    : Infinity;
+  const extraAllowed = extraPages;
+  let extraUsed = 0;
+  while (extraPages > 0) {
+    const pending = progress.filter(needsMore).sort((a, b) => a.fetched / a.total - b.fetched / b.total);
+    if (!pending.length) break;
+    await fetchPage(pending[0]);
+    extraPages -= 1;
+    extraUsed += 1;
+  }
+  for (const s of progress) {
+    const short = s.fetched < s.total ? ` (${s.total - s.fetched} later-ending listings not fetched)` : '';
+    console.log(`  ${s.category.label} / ${s.target.label} ("${s.query}"): ${s.fetched} of ${s.total} listings in ${s.pages} page(s)${short}`);
+  }
+  if (extraUsed || progress.some((s) => s.fetched < s.total)) {
+    console.log(`  extra pages: ${extraUsed} used of ${Number.isFinite(extraAllowed) ? extraAllowed : '∞'} allowed by quota this run`);
   }
 
-  // --- 2. filter to graded cards we care about ----------------------------
+  // --- 2. filter to the cards we care about -------------------------------
   const candidates = [];
-  const skipped = { wrongGrade: 0, alreadyAlerted: 0, outsideWindow: 0, excluded: 0 };
-  for (const { listing, category } of found) {
-    if (!listing.endDate || listing.endDate < now || listing.endDate > windowEnd) {
+  const skipped = { noTarget: 0, noGradePrice: 0, alreadyAlerted: 0, outsideWindow: 0, excluded: 0 };
+  for (const { listing, category } of found.values()) {
+    if (!listing.endDate || listing.endDate < windowStart || listing.endDate > windowEnd) {
       skipped.outsideWindow += 1;
       continue;
     }
@@ -129,27 +173,43 @@ async function main() {
       continue;
     }
     const parsed = parseListing(listing.title, { kind: category.kind });
-    const grade = config.grades.find((g) => g.grader === parsed.grader && g.grade === parsed.grade);
+    // Every target that covers this category and whose requirement the title satisfies.
+    const matchedTargets = config.targets.filter((t) => t.categoryKeys.includes(category.key) && matchesTarget(t, parsed));
+    if (!matchedTargets.length) {
+      skipped.noTarget += 1;
+      if (VERBOSE) console.log(`  skip (${parsed.grader ?? 'raw'} ${parsed.grade ?? ''}${parsed.isAutograph ? ' auto' : ''}, no target): ${listing.title}`);
+      continue;
+    }
+    // A target's titleExclude describes listings of that kind we refuse to
+    // price (e.g. dual autos); that stands even if the card is also a PSA 10.
+    const excludedBy = matchedTargets.find((t) => t.titleExclude?.test(listing.title));
+    if (excludedBy) {
+      skipped.excluded += 1;
+      if (VERBOSE) console.log(`  skip (${excludedBy.label} exclusion): ${listing.title}`);
+      continue;
+    }
+    const grade = resolveGrade(parsed, config.gradePriceKeys);
     if (!grade) {
-      skipped.wrongGrade += 1;
-      if (VERBOSE) console.log(`  skip (grade ${parsed.grader ?? '?'} ${parsed.grade ?? '?'}): ${listing.title}`);
+      skipped.noGradePrice += 1;
+      if (VERBOSE) console.log(`  skip (${parsed.mentionsGrader && !parsed.grader ? 'graded, grade unreadable' : `no guide price field for ${parsed.grader} ${parsed.grade}`}): ${listing.title}`);
       continue;
     }
     if (store.has(`alerted:${listing.itemId}`)) {
       skipped.alreadyAlerted += 1;
       continue;
     }
-    candidates.push({ listing, parsed, category, grade });
+    candidates.push({ listing, parsed, category, grade, targets: matchedTargets, rules: mergeDealRules(config.deal, matchedTargets) });
   }
   candidates.sort((a, b) => (a.listing.endDate?.getTime() ?? 0) - (b.listing.endDate?.getTime() ?? 0));
+  const byTarget = config.targets.map((t) => `${candidates.filter((c) => c.targets.includes(t)).length} ${t.label}`).join(', ');
   console.log(
-    `  ${candidates.length} candidates after grade filter (skipped: ${skipped.wrongGrade} other grade, ${skipped.alreadyAlerted} already alerted, ` +
-      `${skipped.excluded} excluded by title, ${skipped.outsideWindow} outside window)`,
+    `  ${candidates.length} candidates (${byTarget}) (skipped: ${skipped.noTarget} no target, ${skipped.noGradePrice} unpriceable grade, ` +
+      `${skipped.alreadyAlerted} already alerted, ${skipped.excluded} excluded by title, ${skipped.outsideWindow} outside window)`,
   );
 
   // --- 3. price + evaluate -------------------------------------------------
   const deals = [];
-  const stats = { priced: 0, confident: 0, unpriced: 0, lowConfidence: 0, noValue: 0, noCardNumber: 0, detailFetches: 0, errors: 0, truncated: 0 };
+  const stats = { priced: 0, confident: 0, unpriced: 0, lowConfidence: 0, noValue: 0, noCardNumber: 0, tooLate: 0, detailFetches: 0, errors: 0, truncated: 0 };
   let processed = 0;
 
   for (const cand of candidates) {
@@ -162,12 +222,17 @@ async function main() {
       console.warn(`  time budget (${config.pricing.maxRunSeconds}s) reached; ${stats.truncated} listings left unpriced`);
       break;
     }
+    // Pricing takes a while; by now this one may no longer leave enough time to look at it.
+    if (cand.listing.endDate.getTime() - Date.now() < minLeftMs) {
+      stats.tooLate += 1;
+      continue;
+    }
     processed += 1;
 
     try {
       // No card number in the title? We can't be confident, so either pull the
       // item specifics (if allowed) or skip without spending a price-guide call.
-      if (config.deal.requireCardNumber && !cand.parsed.cardNumber && !cand.listing.epid) {
+      if (cand.rules.requireCardNumber && !cand.parsed.cardNumber && !cand.listing.epid) {
         if (shouldFetchDetails(config.ebay.detailFetch, stats.detailFetches, canSpendOptional)) {
           stats.detailFetches += 1;
           const enriched = await enrichWithDetails(cand, ebay, psa);
@@ -187,7 +252,7 @@ async function main() {
       let priced = await priceListing(cand, providers);
 
       // Not confident from the title alone? Optionally pull item specifics and retry.
-      const needsHelp = !priced || priced.marketValue === null || priced.confidence < config.deal.minMatchConfidence;
+      const needsHelp = !priced || priced.marketValue === null || priced.confidence < cand.rules.minMatchConfidence;
       if (needsHelp && !cand.parsed.detailsFetched && shouldFetchDetails(config.ebay.detailFetch, stats.detailFetches, canSpendOptional)) {
         stats.detailFetches += 1;
         const enriched = await enrichWithDetails(cand, ebay, psa);
@@ -208,13 +273,13 @@ async function main() {
       }
       stats.priced += 1;
       if (priced.marketValue === null) stats.noValue += 1;
-      else if (priced.confidence < config.deal.minMatchConfidence) stats.lowConfidence += 1;
+      else if (priced.confidence < cand.rules.minMatchConfidence) stats.lowConfidence += 1;
       else stats.confident += 1;
 
-      const result = evaluateDeal(cand.listing, priced, config.deal);
+      const result = evaluateDeal(cand.listing, priced, cand.rules);
       if (VERBOSE || result.isDeal) {
         console.log(
-          `  ${result.isDeal ? 'DEAL ' : '     '}${fmtMoney(result.totalCost)} vs ${fmtMoney(result.marketValue)} ` +
+          `  ${result.isDeal ? 'DEAL ' : '     '}${fmtMoney(result.totalCost)} vs ${fmtMoney(result.marketValue)} (${cand.grade.label}) ` +
             `[${(priced.confidence * 100).toFixed(0)}% ${priced.source}] ${result.reason} :: ${cand.listing.title}` +
             (VERBOSE ? `\n         q="${priced.query ?? ''}" -> ${priced.matchedName ?? '-'} (${(priced.reasons ?? []).join('; ')})` : ''),
         );
@@ -253,7 +318,7 @@ async function main() {
   const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
   console.log(
     `Done in ${secs}s. priced=${stats.priced} confident=${stats.confident} lowConfidence=${stats.lowConfidence} noValue=${stats.noValue} ` +
-      `unpriced=${stats.unpriced} noCardNumber=${stats.noCardNumber} detailFetches=${stats.detailFetches} errors=${stats.errors} truncated=${stats.truncated} | ` +
+      `unpriced=${stats.unpriced} noCardNumber=${stats.noCardNumber} tooLate=${stats.tooLate} detailFetches=${stats.detailFetches} errors=${stats.errors} truncated=${stats.truncated} | ` +
       `API calls: rapidapi=${ebay.requestCount} pricecharting=${pcClient.requestCount} psa=${psa.lookups} | state entries=${store.size}`,
   );
   if (ebay.quota.remaining !== null) {
@@ -271,7 +336,7 @@ async function priceListing(cand, providers) {
     const r = await provider.price(cand.listing, cand.parsed, { category: cand.category, grade: cand.grade });
     if (!r) continue;
     if (!best || (r.marketValue !== null && r.confidence > (best.marketValue === null ? -1 : best.confidence))) best = r;
-    if (r.marketValue !== null && r.confidence >= config.deal.minMatchConfidence) return r;
+    if (r.marketValue !== null && r.confidence >= cand.rules.minMatchConfidence) return r;
   }
   return best;
 }
@@ -297,8 +362,13 @@ async function enrichWithDetails(cand, ebay, psa) {
 
   let parsed = parseListing(cand.listing.title, { kind: cand.category.kind, specifics });
   parsed.detailsFetched = true;
+  // The specifics disagree with the title about the grade (or say it is graded
+  // when we assumed raw)? Don't guess.
   if (parsed.grader && parsed.grade && (parsed.grader !== cand.grade.grader || parsed.grade !== cand.grade.grade)) {
     return { parsed, gradeMismatch: `${parsed.grader} ${parsed.grade}` };
+  }
+  if (parsed.isAutograph !== cand.parsed.isAutograph) {
+    return { parsed, gradeMismatch: parsed.isAutograph ? 'autographed' : 'not autographed' };
   }
 
   if (psa.enabled && parsed.certNumber && cand.grade.grader === 'PSA') {

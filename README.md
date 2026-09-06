@@ -1,25 +1,31 @@
 # ebay-card-deals
 
-Every 10 minutes, look at eBay auctions for graded sports and Pokémon cards that end in the next 15 minutes, work out what each card is actually worth, and email you when one is going cheap.
+Every 15 minutes, look at eBay auctions for sports and Pokémon cards that end **5–25 minutes from now** (so there is always time to look at the card), work out what each one is actually worth, and email you when one is going cheap.
 
-Currently limited to **PSA 10**; adding other grades/graders or other card categories is a one-line config change (see [Expanding coverage](#expanding-coverage)).
+What it hunts for (`targets` in the config):
+
+* **PSA 10** — Pokémon and sports, graded condition only.
+* **Autographed sports cards, any grade or raw** — pack-pulled autos only. Graded ones are priced at their grade (PSA 9, BGS 9.5, SGC 10 …), raw ones at the guide's ungraded value. Hand-signed / JSA / BAS / PSA-DNA, redemptions, dual/triple autos, cut signatures, booklets and damaged raw cards are skipped on purpose: the matcher would rather miss a card than mis-price one.
+
+Adding other grades or categories is a config change (see [Expanding coverage](#expanding-coverage)).
 
 ## How it works
 
 ```
-GitHub Actions cron (*/10)
+GitHub Actions cron (*/15)
   └─ src/index.js
        1. eBay search  ─ RapidAPI "Real-Time eBay Data" /ebay_search (wraps eBay Browse API)
-          auctions in category 183454 (CCG singles) + 261328 (sports singles),
-          sorted ending-soonest, itemEndDate <= now + 15 min
-       2. parse title  ─ grader/grade, card number, year, set words, parallel words
-          keep only PSA 10, drop anything already alerted
-       3. price it     ─ providers, in order, until one is confident:
-            a. PriceCharting (Pokémon) / SportsCardsPro (sports)  -> PSA 10 value
-            b. eBay active listings for the same ePID + grade      -> 25th-pct ask
-          each answer carries a 0–1 confidence that we matched the RIGHT card
+          one search per target × category (pokemon "psa 10", sports "psa 10", sports "auto"),
+          auctions, sorted ending-soonest, itemEndDate <= now + 25 min; first page always,
+          more pages while a search overflowed and spare RapidAPI quota allows
+       2. parse title  ─ grader/grade, autograph, card number, year, set words, parallel words
+          keep listings that satisfy a target, ending 5-25 min from now, not already alerted
+       3. price it     ─ PriceCharting (Pokémon) / SportsCardsPro (sports): search the guide,
+          score every candidate 0-1 for "is this the SAME card", read the value for the
+          listing's grade (PSA 10 / PSA 9 / BGS 9.5 / raw ...). Autographed listings may only
+          match autographed guide products and vice versa — a hard rule.
        4. evaluate     ─ (bid + shipping) vs market: ≥30% below, ≥$15 saved, market ≥ $25,
-          confidence ≥ 0.75  =>  deal
+          confidence ≥ 0.75  =>  deal   (autos: ≥35% below, market ≥ $40, confidence ≥ 0.85)
        5. notify       ─ one digest email (and/or Discord) with links to the listings
 ```
 
@@ -47,8 +53,10 @@ Alternatives considered: PokemonPriceTracker / PokeTrace / TCG Price Lookup (Pok
 * variant: guide says `[Silver Prizm]` and title says "Silver Prizm" **+0.05**; guide variant missing from title **−0.50**; guide is base but title names a parallel **−0.20**; Japanese vs English mismatch **−0.40**
 * if the runner-up is within 0.10 the result is *ambiguous* → **−0.15**
 * an exact eBay ePID match (when the guide provides one) = **1.0**
+* **autograph consistency is a hard rule**, checked before everything else including the ePID shortcut: a listing that says auto/autograph/signed can only match a guide product that is an autograph (`[Autograph …]`, `… Rookie Autographs`, `[Signature …]`), and a listing that doesn't can never match one. Pricing a base card against its auto version is the easiest way to invent a fake 90%-off deal.
+* a title that mentions a grader but has no readable grade (truncated title, "PSA 20") is never priced as raw.
 
-Anything under `deal.minMatchConfidence` (0.75) is ignored. Listings with no card number in the title can't reach that bar, so they're skipped without spending an API call (unless you enable item-specifics fetching, which usually recovers the number and cert).
+Anything under `deal.minMatchConfidence` (0.75; 0.85 for autos) is ignored. Listings with no card number in the title can't reach that bar, so they're skipped without spending an API call (unless you enable item-specifics fetching, which usually recovers the number and cert).
 
 ## Setup
 
@@ -82,25 +90,26 @@ Everything tunable lives in **`config/scan.config.js`** — no code changes need
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `schedule.scanIntervalMinutes` | 10 | how often the cron runs (must match `.github/workflows/scan.yml`; a test enforces this) |
-| `schedule.windowBufferMinutes` | 5 | look-ahead beyond the interval → scans items ending in the next 15 min |
+| `schedule.scanIntervalMinutes` | 15 | how often the cron runs (must match `.github/workflows/scan.yml`; a test enforces this) |
+| `schedule.minMinutesLeft` | 5 | never alert on (or bother pricing) anything ending sooner than this |
+| `schedule.lookaheadMinutes` | 25 | window end; must be ≥ `minMinutesLeft + scanIntervalMinutes` so runs don't leave gaps (the extra 5 min overlaps the next run and absorbs late cron ticks) |
 | `ebay.buyingOptions` | `['AUCTION']` | add `'FIXED_PRICE'` to include timed BINs (GTC listings have no end date and are dropped) |
-| `ebay.maxPages` | 1 | 200 results per page per category, ending-soonest first |
+| `ebay.maxPagesPerSearch` / `extraPageBurst` | 4 / 4 | extra 200-result pages when a search overflows the window, paid for from spare quota (see below) |
 | `ebay.detailFetch` | `'never'` | `'unmatched'` fetches item specifics (card #, set, cert) only when the title wasn't enough |
 | `categories` | Pokémon, Sports | eBay category ids, price guide, filters |
-| `grades` | PSA 10 | grader + grade + which PriceCharting field holds its value |
-| `deal.minDiscountPct` / `minSavingsUsd` / `minMarketValueUsd` | 30 / 15 / 25 | what counts as a deal |
-| `deal.minMatchConfidence` | 0.75 | how sure we must be it's the right card |
+| `targets` | PSA 10, Autograph | what to hunt: eBay query + condition + min bid + `require` (grade or autograph) + per-target exclusions and deal overrides |
+| `gradePriceKeys` | PSA 10 → `manual-only-price` … raw → `loose-price` | which guide field holds the value for each grade |
+| `deal.minDiscountPct` / `minSavingsUsd` / `minMarketValueUsd` | 30 / 15 / 25 | what counts as a deal (autos override to 35 / 15 / 40) |
+| `deal.minMatchConfidence` | 0.75 | how sure we must be it's the right card (autos: 0.85) |
 | `deal.includeShipping` / `assumedShippingUsd` | true / 5 | eBay often reports "calculated" shipping without a number |
-| `pricing.providers` | `['pricecharting','ebay_active']` | order matters |
-| `pricing.ebayActive.maxLookupsPerRun` | 3 | each costs a RapidAPI request |
+| `pricing.providers` | `['pricecharting']` | add `'ebay_active'` for the asking-price fallback (costs RapidAPI requests; can't price raw cards or autos) |
 | `notify.mode` | `'digest'` | or `'each'` for one email per deal |
 | `notify.timezone` | `America/New_York` | for the "ends at" time in emails |
 
 ### Expanding coverage
 
-* **More grades**: add to `grades`, e.g. `{ grader: 'PSA', grade: 9, priceKey: 'graded-price' }` or `{ grader: 'BGS', grade: 10, priceKey: 'bgs-10-price' }`. The parser already recognises PSA/BGS/CGC/SGC.
-* **More categories**: add an entry to `categories` with the eBay category id, `kind: 'tcg' | 'sports'`, which guide to use and a `productFilter` regex on the guide's set name (e.g. `/^one piece/i`).
+* **More grades**: add a target, e.g. `{ key: 'psa9', label: 'PSA 9', categoryKeys: ['pokemon','sports'], searchQuery: 'psa 9', conditionIds: ['2750'], require: { grader: 'PSA', grade: 9 } }`. Each target×category pair is one more mandatory RapidAPI request per run — check the quota math. The parser recognises PSA/BGS/CGC/SGC and `gradePriceKeys` already maps 7–10.
+* **More categories**: add an entry to `categories` with the eBay category id, `kind: 'tcg' | 'sports'`, which guide to use and a `productFilter` regex on the guide's set name (e.g. `/^one piece/i`), then list its key in the targets that should cover it.
 * **Other marketplaces**: `ebay.marketplaceTld`.
 
 ## RapidAPI quota math (read this)
@@ -108,23 +117,29 @@ Everything tunable lives in **`config/scan.config.js`** — no code changes need
 The Pro plan includes 10,000 requests/month and bills **$0.009 per request** after that. Per run the scanner makes:
 
 ```
-categories × maxPages            (2 × 1 = 2)   search calls
-+ ebayActive.maxLookupsPerRun    (3)           fallback price lookups, only when needed
+target × category pairs          (3)           mandatory: first page of each search
++ extra pages                    (0–9)         only when a search had more in-window listings than one page
++ ebayActive.maxLookupsPerRun    (0, provider off by default)
 + maxDetailFetches               (0 when detailFetch = 'never')
 ```
 
-At a 10-minute cadence that's 4,320 runs/month → **8,640** search requests plus up to **12,960** fallback lookups. The startup log prints this estimate and the end-of-run log prints your remaining quota.
+At a 15-minute cadence that's 2,880 runs/month → **8,640** mandatory requests, leaving ~1,300 spare. (A 10-minute cadence with three searches would be 12,960 — over the plan — which is why it's 15.)
 
-**Quota protection is on by default** (`ebay.protectQuota`): RapidAPI reports the remaining quota and reset time on every response, and the scanner stops spending on *optional* requests (fallback price lookups, item-specifics fetches) as soon as what's left is only enough for the mandatory searches through the end of the billing period. In practice with the defaults the fallback pricing works for the first ~1,300 lookups of the month and then goes quiet until the reset; the eBay searches themselves always keep running and you never pay overage. To get more pricing coverage:
+**Quota protection is on by default** (`ebay.protectQuota`). RapidAPI reports the remaining quota and reset time on every response. The scanner reserves the mandatory requests for every run left in the billing period (+ `quotaReserve`), spreads whatever is spare over those runs, and lets a single run spend up to `extraPageBurst`× that share on extra pages — so quiet weekday mornings (one page covers the whole window) bank pages for Sunday evenings (1,000+ autograph auctions ending in 25 minutes). Listings that don't fit are the latest-ending ones and are usually caught by the next run. The core searches always run; you never pay overage. If the log keeps saying `later-ending listings not fetched` during the hours you care about, the fix is the Ultra plan (60,000/mo) + a higher `rapidApiMonthlyLimit`/`maxPagesPerSearch`, or dropping a target.
 
-* configure PriceCharting/SportsCardsPro tokens (their calls don't touch the RapidAPI quota), or
-* run every 15–20 minutes so more of the quota is free for lookups, or
-* move to the Ultra plan (60,000/mo) and raise `rapidApiMonthlyLimit` / `ebayActive.maxLookupsPerRun`.
+PriceCharting's own limit (1 req/s, one call per new listing thanks to the search endpoint carrying prices) means ~500 listings can be priced per run; `pricing.maxListingsPerRun` and `maxRunSeconds` keep a run inside the cron window, soonest-ending listings first. Lookups are cached for 24h so repeat cards are free.
 
-PriceCharting's own limit (1 req/s) means ~150 listings can be priced per run; `pricing.maxListingsPerRun` and `maxRunSeconds` keep a run inside the cron window, soonest-ending listings first. Lookups are cached for 24h so repeat cards are free.
+## GitHub Actions minutes (read this too)
+
+This repo is **private**, and private repos get 2,000 free Actions minutes/month (3,000 on Pro). A run takes 5–10 minutes and there are 2,880 runs/month, i.e. ~20,000 minutes — GitHub will stop running the workflow once the free minutes are gone (or bill you if you have set a spending limit). Options, cheapest first:
+
+1. **Make the repository public** — public repos have unlimited Actions minutes and the secrets stay secret. Nothing in the code is sensitive.
+2. Run `npm run scan` from any always-on machine with `cron` / Task Scheduler (also fixes GitHub's late ticks).
+3. A self-hosted runner.
 
 ## Caveats
 
-* "X% below market" is the **current bid** at scan time. Auctions with 0–2 bids ending in 10 minutes routinely double in the last 30 seconds; `deal.minBidCount` lets you demand real bidding interest first.
-* GitHub's scheduler is best-effort; ticks are frequently 3–10 minutes late (hence the buffer). For tighter timing run the same script from any always-on box with `cron`.
+* "X% below market" is the **current bid** at scan time. Auctions with 0–2 bids ending in 20 minutes routinely double in the last 30 seconds; `deal.minBidCount` lets you demand real bidding interest first. Alerts now arrive with 5–25 minutes left precisely so you can watch the finish.
+* Raw autographs are priced at the guide's ungraded value, which assumes a clean card. Obvious damage words are excluded from the title, but check the photos.
+* GitHub's scheduler is best-effort; ticks are frequently 3–10 minutes late (hence the 5-minute overlap). For tighter timing run the same script from any always-on box with `cron`.
 * Only what a seller writes in the title is used unless `detailFetch` is enabled. Mis-titled listings ("PSA 10" on a PSA 9) will be caught only with `detailFetch` + PSA cert verification.

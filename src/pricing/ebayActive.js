@@ -32,6 +32,8 @@ export class EbayActiveProvider {
    */
   async price(listing, parsed, { grade }) {
     if (!listing.epid) return null;
+    // Raw cards and autographs can't be compared by "same ePID + grade in title".
+    if (!grade.grader || parsed.isAutograph) return null;
     if (this.lookups >= this.maxLookups) return null;
     if (!this.canSpend()) {
       this.blockedByQuota += 1;

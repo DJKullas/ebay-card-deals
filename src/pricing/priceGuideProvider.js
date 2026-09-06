@@ -45,10 +45,12 @@ export class PriceGuideProvider {
       return { marketValue: null, confidence: 0, source: site, matchedName: null, matchedUrl: null, reasons: match.reasons, query: parsed.query };
     }
 
-    const product = await this.client.getProduct(site, match.product.id);
+    // /api/products already carries every price field, so the per-product call
+    // (which costs another second at the 1 req/s limit) is only a fallback.
+    const product = grade.priceKey in match.product ? match.product : await this.client.getProduct(site, match.product.id);
     const marketValue = penniesToUsd(product[grade.priceKey]);
     const reasons = [...match.reasons];
-    if (marketValue === null) reasons.push(`no ${grade.grader} ${grade.grade} price in guide`);
+    if (marketValue === null) reasons.push(`no ${grade.label ?? `${grade.grader} ${grade.grade}`} price in guide`);
 
     return {
       marketValue,

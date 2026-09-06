@@ -15,6 +15,12 @@ export function minutesUntil(date, now = new Date()) {
   return Math.max(0, Math.round((date.getTime() - now.getTime()) / 60000));
 }
 
+/** "PSA 10", "Raw", "BGS 9.5 auto" ... */
+export function gradeLabel(d) {
+  const g = d.grade?.label ?? (d.grade?.grader ? `${d.grade.grader} ${d.grade.grade}` : 'Raw');
+  return d.parsed?.isAutograph ? `${g} auto` : g;
+}
+
 export function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }
@@ -35,9 +41,9 @@ export function renderEmailHtml(deals, { timezone }) {
         <td style="padding:8px;vertical-align:top;">${l.imageUrl ? `<img src="${escapeHtml(l.imageUrl)}" width="72" alt="" style="border-radius:4px;">` : ''}</td>
         <td style="padding:8px;vertical-align:top;">
           <a href="${escapeHtml(l.url)}" style="font-weight:600;font-size:15px;">${escapeHtml(l.title)}</a><br>
-          <span style="color:#555;">${escapeHtml(d.category.label)} · ${escapeHtml(d.grade.grader)} ${d.grade.grade} · ends in <b>${mins} min</b> (${fmtTime(l.endDate, timezone)})</span><br>
+          <span style="color:#555;">${escapeHtml(d.category.label)} · ${escapeHtml(gradeLabel(d))} · ends in <b>${mins} min</b> (${fmtTime(l.endDate, timezone)})</span><br>
           <span>${priceLabel} ${ship} = <b>${fmtMoney(d.eval.totalCost)}</b></span><br>
-          <span>Market ${escapeHtml(d.grade.grader)} ${d.grade.grade}: <b>${fmtMoney(d.eval.marketValue)}</b>
+          <span>Market ${escapeHtml(gradeLabel(d))}: <b>${fmtMoney(d.eval.marketValue)}</b>
             → <b style="color:#0a7d2c;">${d.eval.discountPct.toFixed(0)}% below</b> (save ${fmtMoney(d.eval.savings)})</span><br>
           <span style="color:#555;font-size:12px;">Matched: ${d.priced.matchedUrl ? `<a href="${escapeHtml(d.priced.matchedUrl)}">${escapeHtml(d.priced.matchedName)}</a>` : escapeHtml(d.priced.matchedName ?? '')}
             · confidence ${(d.priced.confidence * 100).toFixed(0)}% · ${escapeHtml(d.priced.source)}</span><br>
@@ -60,7 +66,7 @@ export function renderText(deals, { timezone }) {
       const l = d.listing;
       return [
         `${l.title}`,
-        `  ${d.category.label} · ${d.grade.grader} ${d.grade.grade} · ends in ${minutesUntil(l.endDate)} min (${fmtTime(l.endDate, timezone)})`,
+        `  ${d.category.label} · ${gradeLabel(d)} · ends in ${minutesUntil(l.endDate)} min (${fmtTime(l.endDate, timezone)})`,
         `  ${l.isAuction ? `bid ${fmtMoney(l.currentPrice)} (${l.bidCount} bids)` : `BIN ${fmtMoney(l.currentPrice)}`} → total ${fmtMoney(d.eval.totalCost)} vs market ${fmtMoney(d.eval.marketValue)} (${d.eval.discountPct.toFixed(0)}% below)`,
         `  match: ${d.priced.matchedName} [${(d.priced.confidence * 100).toFixed(0)}%]`,
         `  ${l.url}`,

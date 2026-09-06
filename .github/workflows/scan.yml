@@ -2,11 +2,11 @@ name: Scan eBay card deals
 
 on:
   schedule:
-    # Every 10 minutes. Keep in sync with schedule.scanIntervalMinutes in
+    # Every 15 minutes. Keep in sync with schedule.scanIntervalMinutes in
     # config/scan.config.js (test/config.test.js fails if they drift).
     # Note: GitHub cron ticks are often several minutes late, which is why the
-    # scan window is interval + buffer.
-    - cron: '*/10 * * * *'
+    # scan window (5-25 min out) overlaps the next run by 5 minutes.
+    - cron: '*/15 * * * *'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -28,7 +28,7 @@ permissions:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 14
     steps:
       - uses: actions/checkout@v5
 

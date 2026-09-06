@@ -34,6 +34,21 @@ export class EbayClient {
     return remaining - runsLeft * mandatoryPerRun - reserve > 0;
   }
 
+  /**
+   * How many *extra* requests this run may spend on top of the mandatory
+   * ones: the spare quota (after reserving the mandatory requests for every
+   * remaining run) spread over the remaining runs, times `burst` so that busy
+   * runs can use what quiet runs didn't. Unknown quota → 0.
+   */
+  extraRequestsAllowed({ intervalMinutes, mandatoryPerRun, reserve = 100, burst = 4 }) {
+    const { remaining, resetSeconds } = this.quota;
+    if (remaining === null || resetSeconds === null) return 0;
+    const runsLeft = Math.max(1, Math.ceil(resetSeconds / (intervalMinutes * 60)));
+    const spare = remaining - reserve - runsLeft * mandatoryPerRun;
+    if (spare <= 0) return 0;
+    return Math.floor((spare / runsLeft) * burst);
+  }
+
   async #get(path, params) {
     const url = new URL(`https://${HOST}${path}`);
     for (const [k, v] of Object.entries(params)) {
@@ -62,14 +77,16 @@ export class EbayClient {
    * @param {string[]} [o.buyingOptions]  e.g. ['AUCTION','FIXED_PRICE']
    * @param {string[]} [o.conditionIds]
    * @param {Date} [o.endBefore]          only items ending before this time
+   * @param {number} [o.minPrice]         only items whose current price (bid for auctions) is at least this, USD
    * @param {string} [o.sort]             endingSoonest | price | -price | newlyListed
    * @param {number} [o.limit]
    * @param {number} [o.offset]
    */
-  async search({ query, categoryIds, epid, buyingOptions, conditionIds, endBefore, sort = 'endingSoonest', limit = 200, offset = 0 }) {
+  async search({ query, categoryIds, epid, buyingOptions, conditionIds, endBefore, minPrice, sort = 'endingSoonest', limit = 200, offset = 0 }) {
     const filters = [];
     if (buyingOptions?.length) filters.push(`buyingOptions:{${buyingOptions.join('|')}}`);
     if (conditionIds?.length) filters.push(`conditionIds:{${conditionIds.join('|')}}`);
+    if (minPrice) filters.push(`price:[${minPrice}..],priceCurrency:USD`);
     // NOTE: the RapidAPI wrapper silently drops itemEndDate when it has a lower
     // bound ("[lo..hi]"), so only the upper bound is sent and callers must
     // filter on endDate themselves (eBay never returns ended items anyway).

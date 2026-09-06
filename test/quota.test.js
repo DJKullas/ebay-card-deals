@@ -15,6 +15,19 @@ test('canSpendOptional keeps enough quota for the mandatory searches', () => {
   assert.equal(c.canSpendOptional({ intervalMinutes: 10, mandatoryPerRun: 2 }), true);
 });
 
+test('extraRequestsAllowed spreads spare quota over remaining runs with a burst factor', () => {
+  const c = new EbayClient({ apiKey: 'x' });
+  // 10 days left, 15-min interval => 960 runs × 3 mandatory = 2880; remaining 4900 - 100 reserve => 1920 spare => 2/run × burst 4 = 8
+  c.quota = { limit: 10000, remaining: 4900, resetSeconds: 10 * 86400 };
+  assert.equal(c.extraRequestsAllowed({ intervalMinutes: 15, mandatoryPerRun: 3, reserve: 100, burst: 4 }), 8);
+  // nothing spare => 0
+  c.quota.remaining = 2980;
+  assert.equal(c.extraRequestsAllowed({ intervalMinutes: 15, mandatoryPerRun: 3, reserve: 100, burst: 4 }), 0);
+  // unknown quota => 0 (be conservative with paid requests)
+  c.quota = { limit: null, remaining: null, resetSeconds: null };
+  assert.equal(c.extraRequestsAllowed({ intervalMinutes: 15, mandatoryPerRun: 3 }), 0);
+});
+
 test('pickStatistic', () => {
   const s = [10, 40, 55, 56, 66, 68];
   assert.equal(pickStatistic(s, 'min'), 10);

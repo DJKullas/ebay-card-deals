@@ -8,47 +8,55 @@
 export const schedule = {
   // How often the job runs. This MUST match the cron in
   // .github/workflows/scan.yml (a unit test checks that they agree).
-  scanIntervalMinutes: 10,
+  // 15 min keeps the 3 eBay searches per run (see `targets`) inside a 10,000
+  // request/month RapidAPI plan: 2,880 runs × 3 = 8,640.
+  scanIntervalMinutes: 15,
 
-  // Extra look-ahead added to the interval. With 10 + 5 the scanner looks for
-  // listings ending in the next 15 minutes, so a late cron tick doesn't miss
-  // anything.
-  windowBufferMinutes: 5,
+  // An alert is only useful if there is time to look at the card before the
+  // auction ends. Listings ending sooner than this are ignored, and anything
+  // that drifts under it while the run is pricing is dropped too.
+  minMinutesLeft: 5,
+
+  // How far ahead to look. Each run covers [minMinutesLeft, lookaheadMinutes]
+  // = 5-25 min. lookahead must be >= minMinutesLeft + scanIntervalMinutes so
+  // consecutive runs leave no gap; the extra 5 min of overlap absorbs late
+  // cron ticks (GitHub's are often several minutes late) and gives every
+  // listing a second look. Duplicates are cheap: guide prices are cached and
+  // alerted items are deduped.
+  lookaheadMinutes: 25,
 };
 
 /** eBay search behaviour (RapidAPI "Real-Time eBay Data", /ebay_search) */
 export const ebay = {
   marketplaceTld: 'com',
 
-  // Free-text query sent to eBay for every category. eBay's search is fuzzy,
-  // so the grade filter below is what actually enforces "PSA 10".
-  searchQuery: 'psa 10',
-
   // AUCTION, FIXED_PRICE, BEST_OFFER. Auctions are the point of an
   // "ending soon" scan; most fixed-price listings are Good-'Til-Cancelled and
   // have no end date at all (eBay still returns them, we drop them).
   buyingOptions: ['AUCTION'],
 
-  // eBay condition id 2750 = "Graded" for trading cards. Leave empty to
-  // disable the condition filter.
-  conditionIds: ['2750'],
-
-  // Max results per API call (eBay caps this at 200) and how many pages to
-  // fetch per category per run. Results are sorted by ending soonest, so
-  // listings that fall off the end of the last page are simply picked up on
-  // the next run when they are closer to ending. ~100 PSA-10 auctions end per
-  // 15 minutes across both categories, so one page is normally enough.
+  // Max results per API call (eBay caps this at 200). Results are sorted by
+  // ending soonest. The first page of every search is always fetched; when a
+  // search has more in-window results than one page (Sunday evenings can have
+  // 1,000+ autograph auctions ending in 25 minutes) extra pages are fetched
+  // up to maxPagesPerSearch — but only as far as the RapidAPI quota allows:
+  // the spare quota (whatever is left after reserving the mandatory first
+  // pages for every remaining run in the billing period) is spread over the
+  // remaining runs, × extraPageBurst so quiet hours bank pages for busy ones.
+  // Listings we can't afford to fetch are the latest-ending ones and are
+  // often picked up by the next run.
   pageSize: 200,
-  maxPages: 1,
+  maxPagesPerSearch: 4,
+  extraPageBurst: 4,
 
   // Your RapidAPI plan's monthly request allowance (Pro = 10,000), used for the
   // usage estimate printed at startup. Overage is billed per request.
   rapidApiMonthlyLimit: 10000,
-  // When true, optional RapidAPI spending (the eBay active-listing price
-  // fallback, item-specifics fetches) is suspended as soon as the remaining
-  // quota reported by RapidAPI is only enough to cover the mandatory search
-  // calls for the rest of the billing period (+ a small reserve). The core
-  // scan keeps running; you just never pay overage for the extras.
+  // When true, optional RapidAPI spending (extra search pages, the eBay
+  // active-listing price fallback, item-specifics fetches) is limited to what
+  // the remaining quota reported by RapidAPI can cover after the mandatory
+  // first-page searches for the rest of the billing period (+ a small
+  // reserve). The core scan keeps running; you just never pay overage.
   protectQuota: true,
   quotaReserve: 100,
 
@@ -66,9 +74,9 @@ export const ebay = {
  * Card categories to scan. Add an entry to expand coverage.
  *   kind             'tcg' or 'sports' – controls how titles are parsed
  *   ebayCategoryIds  183454 = CCG Individual Cards, 261328 = Sports Trading Card Singles
- *   searchQuery      optional per-category override of ebay.searchQuery
- *   titleExclude     optional regex; listings whose title matches are ignored
+ *   queryPrefix      optional words prepended to every target's eBay search query
  *                    (the CCG category mixes every card game together)
+ *   titleExclude     optional regex; listings whose title matches are ignored
  *   priceGuide       which price guide site to query ('pricecharting' | 'sportscardspro')
  *   productFilter    regex applied to the price guide's "console-name" (set name) so a
  *                    Pokemon scan doesn't match One Piece / MTG products, etc.
@@ -79,7 +87,7 @@ export const categories = [
     label: 'Pokémon',
     kind: 'tcg',
     ebayCategoryIds: ['183454'],
-    searchQuery: 'pokemon psa 10',
+    queryPrefix: 'pokemon',
     titleExclude: /\b(one\s*piece|optcg|op\d{2}-\d{3}|st\d{2}-\d{3}|magic|mtg|yu-?gi-?oh|lorcana|weiss|schwarz|digimon|dragon\s*ball|union\s*arena|star\s*wars|riftbound|flesh\s*and\s*blood|metazoo|gundam|naruto)\b/i,
     priceGuide: 'pricecharting',
     productFilter: /^pokemon\b/i,
@@ -95,20 +103,84 @@ export const categories = [
 ];
 
 /**
- * Grades we care about. A listing must match one of these (parsed from the
- * title / item specifics) or it is ignored. `priceKey` is the PriceCharting
- * field that holds the value for that grade:
- *   manual-only-price  PSA 10          graded-price   grade 9
- *   bgs-10-price       BGS 10          box-only-price grade 9.5
- *   condition-17-price CGC 10          new-price      grade 8 / 8.5
- *   condition-18-price SGC 10          loose-price    ungraded
- * To also watch PSA 9s, add { grader: 'PSA', grade: 9, priceKey: 'graded-price' }.
+ * What we are hunting for. Each target runs ONE eBay search per category it
+ * applies to, so the mandatory RapidAPI cost per run = number of
+ * target×category pairs (plus extra pages when quota allows, see `ebay`).
+ * A listing is kept when it satisfies at least one target's
+ * `require` (parsed from the title); if it satisfies several, the strictest
+ * deal rules among them apply.
+ *
+ *   searchQuery   eBay keywords (fuzzy; `require` is what really enforces it)
+ *   conditionIds  eBay condition filter. 2750 = Graded, 4000 = Ungraded for
+ *                 trading cards; [] = any condition
+ *   minPrice      skip auctions whose current bid is below this (USD). Cuts
+ *                 the $0.99-start noise that eats search pages; a card worth
+ *                 the minimum market value below is rarely a real deal at a
+ *                 lower bid this close to the end anyway.
+ *   require       { grader, grade } = that exact grade
+ *                 { autograph: true } = title says auto/autograph/signed;
+ *                 any grade, or raw (priced against the guide's ungraded value)
+ *   titleExclude  listings of this kind we refuse to price at all (the whole
+ *                 listing is dropped, even if another target also matches it)
+ *   deal          overrides for `deal` below (stricter for harder-to-match cards)
+ *
+ * To also watch PSA 9s, add { key:'psa9', searchQuery:'psa 9', require:{grader:'PSA', grade:9}, ... }.
  */
-export const grades = [
-  { grader: 'PSA', grade: 10, priceKey: 'manual-only-price' },
+export const targets = [
+  {
+    key: 'psa10',
+    label: 'PSA 10',
+    categoryKeys: ['pokemon', 'sports'],
+    searchQuery: 'psa 10',
+    conditionIds: ['2750'],
+    minPrice: 10,
+    require: { grader: 'PSA', grade: 10 },
+  },
+  {
+    key: 'auto',
+    label: 'Autograph',
+    // Pokemon has no pack-pulled autographs (and the guide has no auto products).
+    categoryKeys: ['sports'],
+    searchQuery: 'auto',
+    conditionIds: [],
+    minPrice: 15,
+    require: { autograph: true },
+    // Only pack-pulled, manufacturer-certified autos can be priced against the
+    // guide. Anything hand-signed / third-party authenticated (JSA, BAS,
+    // PSA/DNA, COA), redemptions, multi-player autos, reprints and damaged raw
+    // cards are skipped — we would rather miss a card than mis-price one.
+    titleExclude:
+      /\b(in[\s-]?person|ip\s*auto|hand[\s-]?signed|signed\s+(?:in|at|by)\b|jsa|bas\b|beckett\s*(?:auth|coa|witness)|psa\s*\/\s*dna|dna|dsa|coa|witnessed|redemption|facsimile|reprint|rp\b|custom|novelty|cut\s*(?:auto|signature)|buyback|dual|triple|quad|booklet|mystery|damaged|crease|creased|bent|torn|poor|played)\b/i,
+    deal: {
+      // Autos have many look-alike products (parallels, sticker vs on-card,
+      // different insert sets), so demand a tighter match and a bigger gap.
+      minMatchConfidence: 0.85,
+      minDiscountPct: 35,
+      minMarketValueUsd: 40,
+    },
+  },
 ];
 
-/** What counts as a deal */
+/**
+ * Which PriceCharting field holds the value for a given grade. Keys are
+ * "GRADER grade" for grader-specific fields, a bare grade for grader-agnostic
+ * ones, and "raw" for ungraded cards. Grades with no entry are not priced.
+ */
+export const gradePriceKeys = {
+  'PSA 10': 'manual-only-price',
+  'BGS 10': 'bgs-10-price',
+  'CGC 10': 'condition-17-price',
+  'SGC 10': 'condition-18-price',
+  9.5: 'box-only-price',
+  9: 'graded-price',
+  8.5: 'new-price',
+  8: 'new-price',
+  7.5: 'cib-price',
+  7: 'cib-price',
+  raw: 'loose-price',
+};
+
+/** What counts as a deal (per-target overrides live in `targets[].deal`) */
 export const deal = {
   // Alert when (current price + shipping) is at least this % below market.
   minDiscountPct: 30,
@@ -134,10 +206,14 @@ export const deal = {
 
 /** Pricing providers, tried in order until one returns a confident price */
 export const pricing = {
-  providers: ['pricecharting', 'ebay_active'],
+  // 'ebay_active' (asking prices of other sellers for the same ePID) is
+  // available as a fallback but off by default: it costs RapidAPI requests we
+  // no longer have spare with three searches per run, it can't price raw
+  // cards, and asks are a weaker signal than the guide.
+  providers: ['pricecharting'],
   // Hard caps so a run finishes inside the cron window.
-  maxListingsPerRun: 150,
-  maxRunSeconds: 420,
+  maxListingsPerRun: 250,
+  maxRunSeconds: 600,
   // PriceCharting values update daily; cache lookups this long.
   cacheTtlHours: 24,
   pricecharting: {

@@ -53,7 +53,7 @@ export class PriceChartingClient {
     }
   }
 
-  /** Up to 20 products matching a free-text query (no prices). */
+  /** Up to 20 products matching a free-text query, each with its full price row. */
   async searchProducts(site, q) {
     const key = `pc:search:${site}:${q.toLowerCase()}`;
     const cached = this.cache?.get(key);
