@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env node
+#!/usr/bin/env node
 /**
  * Entry point. One run = one scan:
  *   1. pull eBay listings ending in [minMinutesLeft, lookaheadMinutes] for every
