@@ -29,7 +29,10 @@ test('config sanity', () => {
   const s = config.schedule;
   assert.ok(s.scanIntervalMinutes >= 1);
   assert.ok(s.minMinutesLeft >= 0);
-  assert.ok(s.lookaheadMinutes >= s.minMinutesLeft + s.scanIntervalMinutes, 'consecutive runs would leave a gap in coverage');
+  const windowStartMin = s.minMinutesLeft + config.notify.sendAfterSeconds / 60;
+  assert.ok(s.lookaheadMinutes >= windowStartMin + s.scanIntervalMinutes, 'consecutive scans would leave a gap in coverage');
+  assert.ok(config.notify.sendAfterSeconds < config.pricing.maxRunSeconds, 'the email must go out before the scan ends');
+  assert.ok(config.notify.maxDealsPerEmail >= 1);
   assert.ok(config.categories.length > 0);
   for (const c of config.categories) {
     assert.ok(['tcg', 'sports'].includes(c.kind), `${c.key}: kind`);

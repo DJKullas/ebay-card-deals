@@ -53,6 +53,11 @@ export class PriceChartingClient {
     }
   }
 
+  /** Would searchProducts() be answered from the cache (no rate-limited call)? */
+  isSearchCached(site, q) {
+    return Boolean(this.cache?.get(`pc:search:${site}:${q.toLowerCase()}`));
+  }
+
   /** Up to 20 products matching a free-text query, each with its full price row. */
   async searchProducts(site, q) {
     const key = `pc:search:${site}:${q.toLowerCase()}`;

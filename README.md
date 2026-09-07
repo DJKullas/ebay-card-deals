@@ -16,18 +16,21 @@ GitHub Actions: one ~5.7h job (`node src/index.js --loop`), relaunched every 3h,
   └─ every 10 minutes:
        1. eBay search  ─ RapidAPI "Real-Time eBay Data" /ebay_search (wraps eBay Browse API)
           one search per category, its targets OR-ed: pokemon "psa 10", sports "(psa 10,auto,autograph)",
-          auctions with a bid ≥ $20, sorted ending-soonest, itemEndDate <= now + 16 min; first page
+          auctions with a bid ≥ $20, sorted ending-soonest, itemEndDate <= now + 19 min; first page
           always, more pages while a search overflowed and spare RapidAPI quota allows
        2. parse title  ─ grader/grade, autograph, card number, year, set words, parallel words
-          keep listings that satisfy a target, ending 5-16 min from now, not already alerted
+          keep listings that satisfy a target, ending 8-19 min from now, not already alerted (cached cards priced first, then soonest-ending)
        3. price it     ─ PriceCharting (Pokémon) / SportsCardsPro (sports): search the guide,
           score every candidate 0-1 for "is this the SAME card", read the value for the
           listing's grade (PSA 10 / PSA 9 / BGS 9.5 / raw ...). Autographed listings may only
           match autographed guide products and vice versa — a hard rule.
        4. evaluate     ─ (bid + shipping) vs market: ≥30% below, ≥$15 saved, market ≥ $25,
           confidence ≥ 0.75  =>  deal   (autos: ≥35% below, market ≥ $40, confidence ≥ 0.85)
-       5. notify       ─ email (and/or Discord) the moment a deal is found, soonest-ending first;
-          anything that slipped under 5 minutes left while being priced is dropped, not sent
+       5. notify       ─ ONE email (and/or Discord post) per scan, sent 3 min in with the deals found
+          so far, best first (confidence × % below market), max 10. Everything in it has 5-16 min
+          left. Pricing carries on afterwards only to warm the cache; late finds are logged, not sent.
+          Links are `ebay.com/itm/<id>?nordt=true` so an auction that has already ended still opens
+          its own page instead of eBay's "similar items" catalogue page.
 ```
 
 State (which items were already alerted + a 24h cache of price lookups) is kept in `state/state.json` and persisted between Actions runs with `actions/cache`.
@@ -105,8 +108,8 @@ Everything tunable lives in **`config/scan.config.js`** — no code changes need
 | `deal.minMatchConfidence` | 0.75 | how sure we must be it's the right card (autos: 0.85) |
 | `deal.includeShipping` / `assumedShippingUsd` | true / 5 | eBay often reports "calculated" shipping without a number |
 | `pricing.providers` | `['pricecharting']` | add `'ebay_active'` for the asking-price fallback (costs RapidAPI requests; can't price raw cards or autos) |
-| `notify.mode` | `'each'` | one email per deal, sent immediately; `'digest'` = one email per scan at the end |
-| `pricing.concurrency` | 5 | listings priced in parallel (the guide's 1 req/s limit is still enforced on request starts) |
+| `notify.sendAfterSeconds` / `maxDealsPerEmail` | 180 / 10 | the scan's single email goes out 3 min in with the best deals found so far (confidence × % below), capped at 10 |
+| `pricing.concurrency` | 8 | listings priced in parallel (the guide's 1 req/s limit is still enforced on request starts) |
 | `notify.timezone` | `America/New_York` | for the "ends at" time in emails |
 
 ### Expanding coverage

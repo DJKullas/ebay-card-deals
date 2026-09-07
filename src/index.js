@@ -23,6 +23,7 @@ import { Store } from './state/store.js';
 import { EmailNotifier } from './notify/email.js';
 import { DiscordNotifier } from './notify/discord.js';
 import { renderText, fmtMoney } from './notify/format.js';
+import { sleep } from './util/http.js';
 
 /** @typedef {{ listing:object, parsed:object, category:object, grade:object, priced:object, eval:object }} Deal */
 
@@ -133,11 +134,14 @@ async function scanOnce() {
   // --- 1. fetch listings ending soon --------------------------------------
   const now = new Date();
   const minLeftMs = config.schedule.minMinutesLeft * 60_000;
-  const windowStart = new Date(now.getTime() + minLeftMs);
+  const sendAfterMs = config.notify.sendAfterSeconds * 1000;
+  // The email goes out sendAfterMs into the scan; everything in it must still
+  // have minLeftMs on the clock at that point.
+  const windowStart = new Date(now.getTime() + minLeftMs + sendAfterMs);
   const windowEnd = new Date(now.getTime() + config.schedule.lookaheadMinutes * 60_000);
   console.log(
     `Scanning listings ending between ${windowStart.toISOString()} and ${windowEnd.toISOString()} ` +
-      `(${config.schedule.minMinutesLeft}-${config.schedule.lookaheadMinutes} min from now)${DRY_RUN ? ' [dry run]' : ''}`,
+      `(${((minLeftMs + sendAfterMs) / 60_000).toFixed(1)}-${config.schedule.lookaheadMinutes} min from now; email at +${config.notify.sendAfterSeconds}s)${DRY_RUN ? ' [dry run]' : ''}`,
   );
 
   // The same listing can come back from several searches (a PSA 10 auto is
@@ -229,10 +233,13 @@ async function scanOnce() {
     }
     candidates.push({ listing, parsed, category, grade, targets: matchedTargets, rules: mergeDealRules(config.deal, matchedTargets) });
   }
-  candidates.sort((a, b) => (a.listing.endDate?.getTime() ?? 0) - (b.listing.endDate?.getTime() ?? 0));
+  // Cards we already priced today cost nothing to evaluate, so they go first;
+  // then soonest-ending. This is what decides what makes the email deadline.
+  for (const c of candidates) c.cached = pcClient.isSearchCached(c.category.priceGuide, c.parsed.query ?? '');
+  candidates.sort((a, b) => Number(b.cached) - Number(a.cached) || (a.listing.endDate?.getTime() ?? 0) - (b.listing.endDate?.getTime() ?? 0));
   const byTarget = config.targets.map((t) => `${candidates.filter((c) => c.targets.includes(t)).length} ${t.label}`).join(', ');
   console.log(
-    `  ${candidates.length} candidates (${byTarget}) (skipped: ${skipped.noTarget} no target, ${skipped.noGradePrice} unpriceable grade, ` +
+    `  ${candidates.length} candidates (${byTarget}; ${candidates.filter((c) => c.cached).length} cached) (skipped: ${skipped.noTarget} no target, ${skipped.noGradePrice} unpriceable grade, ` +
       `${skipped.alreadyAlerted} already alerted, ${skipped.excluded} excluded by title, ${skipped.outsideWindow} outside window)`,
   );
 
@@ -243,9 +250,26 @@ async function scanOnce() {
   let nextIdx = 0;
   let stopped = false;
 
+  // The one email of this scan goes out at the deadline with whatever has been
+  // found by then. In-flight pricing is allowed to finish first (a few seconds).
+  let emailSent = false;
+  let inFlight = 0;
+  let emailPromise = null;
+  const sendDeadline = startedAt + sendAfterMs;
+  // All workers park here once the deadline passes; the in-flight lookups
+  // drain (a few seconds), the email goes, then pricing resumes.
+  const sendEmailOnce = () => {
+    emailPromise ??= (async () => {
+      while (inFlight > 0) await sleep(100);
+      emailSent = true;
+      await notify(deals.filter((d) => !d.sentDecision));
+    })();
+    return emailPromise;
+  };
+
   // A few listings are priced concurrently so the guide's 1 req/s limit is
-  // actually reached (each call has ~2s of latency); the RateLimiter inside the
-  // client still spaces the requests. Soonest-ending listings go first.
+  // actually reached (each call has 1-4s of latency); the RateLimiter inside the
+  // client still spaces the requests. Order: cached first, then soonest-ending.
   const worker = async () => {
     while (!stopped && nextIdx < candidates.length) {
       if (processed >= LIMIT) {
@@ -257,18 +281,29 @@ async function scanOnce() {
         console.warn(`  time budget (${config.pricing.maxRunSeconds}s) reached; ${candidates.length - nextIdx} listings left unpriced`);
         break;
       }
+      if (!emailSent && Date.now() >= sendDeadline) await sendEmailOnce();
       const cand = candidates[nextIdx++];
-      // Pricing takes a while; by now this one may no longer leave enough time to look at it.
+      // Past the deadline this one can't make the email; it may still warm the cache.
       if (cand.listing.endDate.getTime() - Date.now() < minLeftMs) {
         stats.tooLate += 1;
         continue;
       }
       processed += 1;
-      await priceAndEvaluate(cand);
+      inFlight += 1;
+      try {
+        await priceAndEvaluate(cand);
+      } finally {
+        inFlight -= 1;
+      }
     }
   };
   await Promise.all(Array.from({ length: Math.max(1, config.pricing.concurrency ?? 1) }, worker));
   stats.truncated = candidates.length - nextIdx;
+  // Fewer candidates than the deadline needed (quiet hours): send right away.
+  if (!emailSent) {
+    emailSent = true;
+    await notify(deals);
+  }
 
   async function priceAndEvaluate(cand) {
     try {
@@ -327,10 +362,12 @@ async function scanOnce() {
         );
       }
       if (result.isDeal) {
-        const deal = { ...cand, priced, eval: result };
+        const deal = { ...cand, priced, eval: result, foundAt: Date.now() };
         deals.push(deal);
-        // Minutes matter: send now rather than after the whole scan is priced.
-        if (config.notify.mode === 'each') await notify([deal]);
+        if (emailSent) {
+          deal.sentDecision = 'after email';
+          console.log(`         ^ found after this scan's email went out — not sent`);
+        }
       }
     } catch (err) {
       stats.errors += 1;
@@ -338,34 +375,41 @@ async function scanOnce() {
     }
   }
 
-  // --- 4. notify (digest mode) --------------------------------------------
-  deals.sort((a, b) => b.eval.discountPct - a.eval.discountPct);
+  // --- 4. summary ------------------------------------------------------------
   if (deals.length) {
-    console.log(`\n${deals.length} deal(s):\n${renderText(deals, { timezone: config.notify.timezone })}\n`);
-    if (config.notify.mode !== 'each') await notify(deals);
+    const sent = deals.filter((d) => d.sentDecision === 'sent');
+    const late = deals.length - sent.length;
+    console.log(`\n${deals.length} deal(s)${late ? ` (${sent.length} sent, ${late} found too late for the email or cut by the cap)` : ''}:\n${renderText(sent.length ? sent : deals, { timezone: config.notify.timezone })}\n`);
   } else {
     console.log('No deals this run.');
   }
 
-  async function notify(batch) {
-    if (DRY_RUN) return;
-    // Re-check at send time: pricing may have eaten into the lead time.
-    const stillUseful = batch.filter((d) => d.listing.endDate.getTime() - Date.now() >= minLeftMs);
-    if (stillUseful.length < batch.length) {
-      stats.tooLate += batch.length - stillUseful.length;
-      console.warn(`  ${batch.length - stillUseful.length} deal(s) dropped: under ${config.schedule.minMinutesLeft} min left by the time they were priced`);
+  /** The scan's single email: best deals first, capped, all with >= minMinutesLeft on the clock. */
+  async function notify(found) {
+    if (!found.length) return;
+    // Re-check at send time; the window start should guarantee this, but be sure.
+    const stillUseful = found.filter((d) => d.listing.endDate.getTime() - Date.now() >= minLeftMs);
+    for (const d of found) if (!stillUseful.includes(d)) d.sentDecision = 'too late';
+    if (stillUseful.length < found.length) {
+      stats.tooLate += found.length - stillUseful.length;
+      console.warn(`  ${found.length - stillUseful.length} deal(s) dropped: under ${config.schedule.minMinutesLeft} min left at send time`);
     }
-    if (!stillUseful.length) return;
+    // Best first: how sure we are it's the right card × how far below market.
+    stillUseful.sort((a, b) => b.priced.confidence * b.eval.discountPct - a.priced.confidence * a.eval.discountPct);
+    const batch = stillUseful.slice(0, config.notify.maxDealsPerEmail);
+    for (const d of stillUseful) d.sentDecision = batch.includes(d) ? 'sent' : 'cut by cap';
+    if (stillUseful.length > batch.length) console.log(`  ${stillUseful.length - batch.length} weaker deal(s) left out of the email (notify.maxDealsPerEmail = ${config.notify.maxDealsPerEmail})`);
+    if (DRY_RUN) return;
     for (const n of notifiers) {
       try {
-        await n.send(stillUseful, { subjectPrefix: config.notify.subjectPrefix, timezone: config.notify.timezone });
-        console.log(`  sent ${stillUseful.length} deal(s) via ${n.name}`);
+        await n.send(batch, { subjectPrefix: config.notify.subjectPrefix, timezone: config.notify.timezone });
+        console.log(`  sent ${batch.length} deal(s) via ${n.name} at +${((Date.now() - startedAt) / 1000).toFixed(0)}s`);
       } catch (err) {
         console.error(`  ${n.name} failed: ${err.message}`);
         process.exitCode = 1;
       }
     }
-    for (const d of stillUseful) store.set(`alerted:${d.listing.itemId}`, { at: Date.now(), total: d.eval.totalCost }, config.notify.dedupeHours * 3600 * 1000);
+    for (const d of batch) store.set(`alerted:${d.listing.itemId}`, { at: Date.now(), total: d.eval.totalCost }, config.notify.dedupeHours * 3600 * 1000);
     store.save();
   }
 

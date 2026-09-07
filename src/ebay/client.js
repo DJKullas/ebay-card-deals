@@ -149,11 +149,15 @@ export function normaliseSummary(it) {
   const bid = num(it.currentBidPrice?.value);
   const bin = num(it.price?.value);
   const ship = it.shippingOptions?.[0]?.shippingCost;
+  const legacyItemId = it.legacyItemId ?? String(it.itemId ?? '').split('|')[1];
   return {
     itemId: it.itemId,
-    legacyItemId: it.legacyItemId ?? String(it.itemId ?? '').split('|')[1],
+    legacyItemId,
     title: it.title ?? '',
-    url: (it.itemWebUrl ?? '').split('?')[0],
+    // Canonical listing URL. `nordt=true` stops eBay redirecting an *ended*
+    // auction to the catalogue product page (a wall of other sellers' BINs),
+    // which otherwise makes a late-opened alert look like the wrong item.
+    url: legacyItemId ? `https://www.ebay.com/itm/${legacyItemId}?nordt=true` : (it.itemWebUrl ?? '').split('?')[0],
     imageUrl: it.image?.imageUrl ?? null,
     epid: it.epid ?? null,
     categoryId: it.leafCategoryIds?.[0] ?? it.categories?.[0]?.categoryId ?? null,

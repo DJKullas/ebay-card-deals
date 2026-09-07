@@ -42,7 +42,7 @@ test('normaliseSummary picks the bid for auctions and the price for BINs', () =>
   assert.equal(auction.isAuction, true);
   assert.equal(auction.currentPrice, 12.5);
   assert.equal(auction.shippingCost, 4.99);
-  assert.equal(auction.url, 'https://www.ebay.com/itm/1');
+  assert.equal(auction.url, 'https://www.ebay.com/itm/1?nordt=true');
   assert.ok(auction.endDate instanceof Date);
   const bin = normaliseSummary({ ...base, buyingOptions: ['FIXED_PRICE'], price: { value: '99', currency: 'USD' }, shippingOptions: [{ shippingCostType: 'CALCULATED' }] });
   assert.equal(bin.isAuction, false);

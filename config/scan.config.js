@@ -16,14 +16,16 @@ export const schedule = {
   scanIntervalMinutes: 10,
 
   // An alert is only useful if there is time to look at the card before the
-  // auction ends. Listings ending sooner than this are ignored, and a deal is
-  // dropped rather than sent if pricing pushed it under this.
+  // auction ends. Every deal in the email has at least this long left when the
+  // email is sent (notify.sendAfterSeconds into the scan).
   minMinutesLeft: 5,
 
-  // How far ahead to look. Each scan covers [minMinutesLeft, lookaheadMinutes]
-  // = 5-16 min. Must be >= minMinutesLeft + scanIntervalMinutes so consecutive
-  // scans leave no gap; the extra minute covers a scan starting a little late.
-  lookaheadMinutes: 16,
+  // How far ahead to look. A scan covers listings ending between
+  //   minMinutesLeft + sendAfterSeconds  (5 + 3 = 8 min)  and  lookaheadMinutes
+  // so alerts arrive 5-16 min before the end. Must be >= that start +
+  // scanIntervalMinutes so consecutive scans leave no gap (the extra minute
+  // covers a scan starting a little late).
+  lookaheadMinutes: 19,
 
   // GitHub's cron scheduler is far too erratic for this (it fired a "*/15"
   // schedule 6 times in 14 hours), so the workflow instead runs ONE long job
@@ -238,7 +240,7 @@ export const pricing = {
   // Listings priced in parallel. The guide allows 1 request/second (the
   // RateLimiter enforces that on request starts) and a call takes 1-4s, so
   // ~5 in flight keeps the limiter busy; more buys nothing.
-  concurrency: 5,
+  concurrency: 8,
   pricecharting: {
     // PriceCharting allows 1 request/second (request starts, see RateLimiter).
     minMsBetweenRequests: 1100,
@@ -259,10 +261,14 @@ export const pricing = {
 
 /** Notifications */
 export const notify = {
-  // 'each'   = every deal is emailed the moment it is found (minutes matter
-  //            when the auction ends in 5-16 of them)
-  // 'digest' = one email per scan listing every deal, sent when the scan ends
-  mode: 'each',
+  // ONE email per scan. It goes out this many seconds into the scan with
+  // whatever has been priced by then (cached cards first, then soonest-ending),
+  // so every deal in it still has >= minMinutesLeft on the clock. Pricing
+  // continues afterwards only to warm the cache; anything found late is
+  // logged, not sent. Lower = fresher alerts but fewer listings priced.
+  sendAfterSeconds: 180,
+  // Cap per email, best first (match confidence × % below market).
+  maxDealsPerEmail: 10,
   timezone: 'America/New_York',
   subjectPrefix: '[Card Deals]',
   // Don't re-alert the same eBay item within this many hours.
