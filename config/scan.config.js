@@ -221,6 +221,15 @@ export const deal = {
   // Auctions with fewer bids than this are skipped (0 = don't care). Useful if
   // you only want cards that already have real bidding interest.
   minBidCount: 0,
+  // Liquidity: the guide's `sales-volume` is its count of sales in the last
+  // year across ALL grades of that card. Below this the "market value" rests
+  // on a handful of comps and the card is hard to resell, so it's not a deal.
+  // Cards with no sales figure at all are rejected too.
+  minSalesPerYear: 12,
+  // Non-English cards (title or item specifics say Japanese / JPN / JP,
+  // Chinese, Korean, ...) are dropped before pricing. Japanese is especially
+  // common in the Pokémon results, and the guides price the English print.
+  excludeNonEnglish: true,
 };
 
 /** Pricing providers, tried in order until one returns a confident price */

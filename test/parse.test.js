@@ -44,6 +44,16 @@ test('TCG card numbers come from the x/y pattern', () => {
   assert.equal(q.isJapanese, false);
 });
 
+test('print language: Japanese / Chinese / Korean detected, English is null', () => {
+  assert.equal(parseListing('POKEMON PSA 10 SNORLAX VMAX 046/060 s1H JAPANESE', { kind: 'tcg' }).language, 'japanese');
+  assert.equal(parseListing('Pokemon Raikou Split Earth 038/088 JPN PSA 10', { kind: 'tcg' }).language, 'japanese');
+  assert.equal(parseListing('Pokemon CSV4C Rika #159 Special Art Rare Simplified Chinese PSA 10', { kind: 'tcg' }).language, 'chinese');
+  assert.equal(parseListing('Charizard ex 199/165 Korean PSA 10', { kind: 'tcg' }).language, 'korean');
+  assert.equal(parseListing('Pikachu 25/102 Base Set PSA 10', { kind: 'tcg', specifics: { Language: 'Japanese' } }).language, 'japanese');
+  assert.equal(parseListing('Misdreavus 233/217 Ascended Heroes Illustration Rare PSA 10', { kind: 'tcg' }).language, null);
+  assert.equal(parseListing('2024 Panini Prizm Jayden Daniels #347 Silver PSA 10', { kind: 'sports' }).language, null);
+});
+
 test('sports card numbers come from # or CODE-style tokens, never from serials', () => {
   assert.equal(parseListing('2024 Panini Select Concourse #27 DRAKE MAYE White Shock ROOKIE RC /199 PSA 10', { kind: 'sports' }).cardNumber, '27');
   assert.equal(parseListing('Topps 2025 Chrome Update Chromeography Luke Keaschall Auto RC CHRU-LK PSA 10', { kind: 'sports' }).cardNumber, 'CHRULK');

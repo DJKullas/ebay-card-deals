@@ -12,7 +12,7 @@ export function matchesTarget(target, parsed) {
 }
 
 // Rule fields where a larger number means "harder to qualify as a deal".
-const STRICTER_IS_MAX = ['minDiscountPct', 'minMarketValueUsd', 'minSavingsUsd', 'minMatchConfidence', 'minBidCount'];
+const STRICTER_IS_MAX = ['minDiscountPct', 'minMarketValueUsd', 'minSavingsUsd', 'minMatchConfidence', 'minBidCount', 'minSalesPerYear'];
 
 /**
  * Combine the global deal rules with the overrides of every target a listing
@@ -24,7 +24,7 @@ export function mergeDealRules(base, targets) {
   for (const t of targets) {
     for (const [k, v] of Object.entries(t.deal ?? {})) {
       if (STRICTER_IS_MAX.includes(k) && typeof out[k] === 'number') out[k] = Math.max(out[k], v);
-      else if (k === 'requireCardNumber') out[k] = out[k] || v;
+      else if (k === 'requireCardNumber' || k === 'excludeNonEnglish') out[k] = out[k] || v;
       else out[k] = v;
     }
   }

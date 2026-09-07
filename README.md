@@ -19,13 +19,15 @@ GitHub Actions: one ~5.7h job (`node src/index.js --loop`), relaunched every 3h,
           auctions with a bid ≥ $20, sorted ending-soonest, itemEndDate <= now + 19 min; first page
           always, more pages while a search overflowed and spare RapidAPI quota allows
        2. parse title  ─ grader/grade, autograph, card number, year, set words, parallel words
-          keep listings that satisfy a target, ending 8-19 min from now, not already alerted (cached cards priced first, then soonest-ending)
+          keep listings that satisfy a target, ending 8-19 min from now, not already alerted, not
+          Japanese / other non-English (cached cards priced first, then soonest-ending)
        3. price it     ─ PriceCharting (Pokémon) / SportsCardsPro (sports): search the guide,
           score every candidate 0-1 for "is this the SAME card", read the value for the
           listing's grade (PSA 10 / PSA 9 / BGS 9.5 / raw ...). Autographed listings may only
           match autographed guide products and vice versa — a hard rule.
        4. evaluate     ─ (bid + shipping) vs market: ≥30% below, ≥$15 saved, market ≥ $25,
-          confidence ≥ 0.75  =>  deal   (autos: ≥35% below, market ≥ $40, confidence ≥ 0.85)
+          confidence ≥ 0.75, guide shows ≥ 12 sales in the last year  =>  deal
+          (autos: ≥35% below, market ≥ $40, confidence ≥ 0.85)
        5. notify       ─ ONE email (and/or Discord post) per scan, sent 3 min in with the deals found
           so far, best first (confidence × % below market), max 10. Everything in it has 5-16 min
           left. Pricing carries on afterwards only to warm the cache; late finds are logged, not sent.
@@ -94,10 +96,10 @@ Everything tunable lives in **`config/scan.config.js`** — no code changes need
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `schedule.scanIntervalMinutes` | 15 | how often the loop scans |
-| `schedule.loopMinutes` / `launchEveryHours` | 340 / 3 | how long one Actions job loops, and how often a replacement is launched (must match the cron in `.github/workflows/scan.yml`; a test enforces this) |
+| `schedule.scanIntervalMinutes` | 10 | how often the loop scans |
+| `schedule.loopMinutes` / `launchEveryHours` | 342 / 3 | how long one Actions job loops, and how often a replacement is launched (must match the cron in `.github/workflows/scan.yml`; a test enforces this) |
 | `schedule.minMinutesLeft` | 5 | never alert on (or bother pricing) anything ending sooner than this |
-| `schedule.lookaheadMinutes` | 25 | window end; must be ≥ `minMinutesLeft + scanIntervalMinutes` so runs don't leave gaps (the extra 5 min overlaps the next run and absorbs late cron ticks) |
+| `schedule.lookaheadMinutes` | 19 | window end; must be ≥ `minMinutesLeft + sendAfterSeconds/60 + scanIntervalMinutes` so scans don't leave gaps (the spare minute absorbs a late start) |
 | `ebay.buyingOptions` | `['AUCTION']` | add `'FIXED_PRICE'` to include timed BINs (GTC listings have no end date and are dropped) |
 | `ebay.maxPagesPerSearch` / `extraPageBurst` | 4 / 4 | extra 200-result pages when a search overflows the window, paid for from spare quota (see below) |
 | `ebay.detailFetch` | `'never'` | `'unmatched'` fetches item specifics (card #, set, cert) only when the title wasn't enough |
@@ -107,6 +109,8 @@ Everything tunable lives in **`config/scan.config.js`** — no code changes need
 | `deal.minDiscountPct` / `minSavingsUsd` / `minMarketValueUsd` | 30 / 15 / 25 | what counts as a deal (autos override to 35 / 15 / 40) |
 | `deal.minMatchConfidence` | 0.75 | how sure we must be it's the right card (autos: 0.85) |
 | `deal.includeShipping` / `assumedShippingUsd` | true / 5 | eBay often reports "calculated" shipping without a number |
+| `deal.minSalesPerYear` | 12 | liquidity floor: the guide's `sales-volume` (sales in the last year, all grades) must be at least this, and must be reported at all |
+| `deal.excludeNonEnglish` | true | drop listings whose title/specifics say Japanese, JPN, Chinese, Korean, ... before pricing (the guides price the English print) |
 | `pricing.providers` | `['pricecharting']` | add `'ebay_active'` for the asking-price fallback (costs RapidAPI requests; can't price raw cards or autos) |
 | `notify.sendAfterSeconds` / `maxDealsPerEmail` | 180 / 10 | the scan's single email goes out 3 min in with the best deals found so far (confidence × % below), capped at 10 |
 | `pricing.concurrency` | 8 | listings priced in parallel (the guide's 1 req/s limit is still enforced on request starts) |

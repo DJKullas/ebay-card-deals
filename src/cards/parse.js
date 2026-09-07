@@ -66,6 +66,7 @@ export function parseListing(title, { kind = 'sports', specifics = {} } = {}) {
   const cardNum = detectCardNumber(clean, kind, spec);
   const certNumber = detectCert(clean, spec);
   const isJapanese = /\b(japanese|japan|jp|jpn)\b/i.test(clean) || /japan/i.test(spec.language ?? '') || /japan/i.test(spec['country of origin'] ?? '');
+  const language = isJapanese ? 'japanese' : detectLanguage(clean, spec);
   const isAutograph = AUTOGRAPH_RE.test(clean) || /^yes$/i.test(spec.autographed ?? '') || /\bauto/i.test(spec.features ?? '');
   // "Graded" without a readable grade (truncated title, "PSA 20", "SGC …"):
   // we must not price it as a raw card.
@@ -83,6 +84,10 @@ export function parseListing(title, { kind = 'sports', specifics = {} } = {}) {
     cardNumberRaw: cardNum?.raw ?? null,
     certNumber,
     isJapanese,
+    // Non-English print language when the title/specifics say so, else null
+    // (English, or nothing said). The price guides list these as separate
+    // products, so pricing one against the English card is a false match.
+    language,
     isAutograph,
     mentionsGrader,
     tokens,
@@ -198,6 +203,18 @@ export function tokenise(clean) {
     .map((t) => t.replace(/^[.'\-]+|[.'\-]+$/g, ''))
     .map((t) => (/^\d/.test(t) ? t : t.replace(/\./g, ''))) // "j.j." -> "jj", keep "9.5"
     .filter((t) => t && !/^\d+\/\d+$/.test(t)); // drop "24/99" style serials from tokens
+}
+
+const LANGUAGE_RE = /\b(chinese|s-chinese|t-chinese|korean|korea|thai|indonesian|german|french|italian|spanish|portuguese|dutch|russian|polish)\b/i;
+
+/** Non-English print language from the title or the Language item specific, else null. */
+function detectLanguage(clean, spec) {
+  const m = LANGUAGE_RE.exec(clean) ?? LANGUAGE_RE.exec(spec.language ?? '');
+  if (!m) return null;
+  const word = m[1].toLowerCase();
+  if (word === 'korea') return 'korean';
+  if (word.endsWith('chinese')) return 'chinese';
+  return word;
 }
 
 function buildQuery({ tokens, year, cardNumber, kind, isJapanese, isAutograph = false, spec }) {

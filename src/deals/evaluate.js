@@ -26,9 +26,22 @@ export function evaluateDeal(listing, priced, rules) {
   const out = { ...base, discountPct, savings };
 
   if (market < rules.minMarketValueUsd) return { ...out, isDeal: false, reason: `market $${market.toFixed(0)} < min $${rules.minMarketValueUsd}` };
+  if ((rules.minSalesPerYear ?? 0) > 0) {
+    const sales = salesPerYear(priced);
+    if (sales === null) return { ...out, isDeal: false, reason: 'sales volume unknown' };
+    if (sales < rules.minSalesPerYear) return { ...out, isDeal: false, reason: `${sales} sales/yr < min ${rules.minSalesPerYear} (illiquid)` };
+  }
   if (listing.isAuction && listing.bidCount < rules.minBidCount) return { ...out, isDeal: false, reason: `${listing.bidCount} bids < min ${rules.minBidCount}` };
   if (discountPct < rules.minDiscountPct) return { ...out, isDeal: false, reason: `${discountPct.toFixed(0)}% below market < ${rules.minDiscountPct}%` };
   if (savings < rules.minSavingsUsd) return { ...out, isDeal: false, reason: `$${savings.toFixed(0)} savings < $${rules.minSavingsUsd}` };
 
   return { ...out, isDeal: true, reason: `${discountPct.toFixed(0)}% below market` };
+}
+
+/** Guide's sales in the last year (all grades), or null when it didn't report one. */
+export function salesPerYear(priced) {
+  const raw = priced?.extra?.salesVolume;
+  if (raw === null || raw === undefined || raw === '') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
 }

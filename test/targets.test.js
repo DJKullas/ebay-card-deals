@@ -73,6 +73,14 @@ test('stricter rules win when a listing satisfies several targets', () => {
   assert.equal(rules.minDiscountPct, Math.max(config.deal.minDiscountPct, auto.deal.minDiscountPct));
   assert.equal(rules.requireCardNumber, config.deal.requireCardNumber);
   assert.deepEqual(mergeDealRules(config.deal, [psa10]), config.deal);
+  const loose = mergeDealRules(config.deal, [{ deal: { minSalesPerYear: 1, excludeNonEnglish: false } }]);
+  assert.equal(loose.minSalesPerYear, config.deal.minSalesPerYear, 'a target cannot loosen the liquidity floor');
+  assert.equal(loose.excludeNonEnglish, true, 'a target cannot re-enable non-English cards');
+});
+
+test('config: liquidity floor is well above one sale a year, non-English excluded', () => {
+  assert.ok(config.deal.minSalesPerYear >= 6);
+  assert.equal(config.deal.excludeNonEnglish, true);
 });
 
 test('searchPlan: one eBay search per category with its targets OR-ed together', () => {

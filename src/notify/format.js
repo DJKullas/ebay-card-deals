@@ -46,7 +46,7 @@ export function renderEmailHtml(deals, { timezone }) {
           <span>Market ${escapeHtml(gradeLabel(d))}: <b>${fmtMoney(d.eval.marketValue)}</b>
             → <b style="color:#0a7d2c;">${d.eval.discountPct.toFixed(0)}% below</b> (save ${fmtMoney(d.eval.savings)})</span><br>
           <span style="color:#555;font-size:12px;">Matched: ${d.priced.matchedUrl ? `<a href="${escapeHtml(d.priced.matchedUrl)}">${escapeHtml(d.priced.matchedName)}</a>` : escapeHtml(d.priced.matchedName ?? '')}
-            · confidence ${(d.priced.confidence * 100).toFixed(0)}% · ${escapeHtml(d.priced.source)}</span><br>
+            · confidence ${(d.priced.confidence * 100).toFixed(0)}%${d.priced.extra?.salesVolume != null ? ` · ${escapeHtml(String(d.priced.extra.salesVolume))} sales/yr` : ''} · ${escapeHtml(d.priced.source)}</span><br>
           <span style="color:#777;font-size:12px;">Seller ${escapeHtml(l.seller ?? '?')} (${l.sellerFeedbackScore ?? '?'}, ${l.sellerFeedbackPct ?? '?'}%) · ships from ${escapeHtml(l.itemLocationCountry ?? '?')}</span>
         </td>
       </tr>`;
@@ -68,7 +68,7 @@ export function renderText(deals, { timezone }) {
         `${l.title}`,
         `  ${d.category.label} · ${gradeLabel(d)} · ends in ${minutesUntil(l.endDate)} min (${fmtTime(l.endDate, timezone)})`,
         `  ${l.isAuction ? `bid ${fmtMoney(l.currentPrice)} (${l.bidCount} bids)` : `BIN ${fmtMoney(l.currentPrice)}`} → total ${fmtMoney(d.eval.totalCost)} vs market ${fmtMoney(d.eval.marketValue)} (${d.eval.discountPct.toFixed(0)}% below)`,
-        `  match: ${d.priced.matchedName} [${(d.priced.confidence * 100).toFixed(0)}%]`,
+        `  match: ${d.priced.matchedName} [${(d.priced.confidence * 100).toFixed(0)}%]${d.priced.extra?.salesVolume != null ? ` · ${d.priced.extra.salesVolume} sales/yr` : ''}`,
         `  ${l.url}`,
       ].join('\n');
     })

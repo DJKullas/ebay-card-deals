@@ -2,7 +2,7 @@
 /**
  * Entry point. One run = one scan:
  *   1. pull eBay listings ending in [minMinutesLeft, lookaheadMinutes] for every
- *      target Ã— category (PSA 10 Pokemon, PSA 10 sports, autographed sports)
+ *      target x category (PSA 10 Pokemon, PSA 10 sports, autographed sports)
  *   2. keep the ones that satisfy a target (grade / autograph, parsed from the title)
  *   3. price each one against the price guide(s) with a confidence score
  *   4. alert on anything confidently priced and sufficiently below market
@@ -56,7 +56,7 @@ async function main() {
   console.log(`Loop mode: scanning every ${config.schedule.scanIntervalMinutes} min for ${LOOP_MINUTES} min (until ${new Date(endAt).toISOString()})`);
   for (let n = 1; ; n += 1) {
     const tick = Date.now();
-    console.log(`\n===== scan ${n} Â· ${new Date(tick).toISOString()} =====`);
+    console.log(`\n===== scan ${n} - ${new Date(tick).toISOString()} =====`);
     try {
       await scanOnce();
     } catch (err) {
@@ -113,7 +113,7 @@ async function scanOnce() {
     return providerImpls[p];
   });
   if (!pcTokens.pricecharting && !pcTokens.sportscardspro) {
-    console.warn('PRICECHARTING_TOKEN not set â€” PriceCharting provider will be skipped; only the eBay active-listing fallback is available.');
+    console.warn('PRICECHARTING_TOKEN not set - PriceCharting provider will be skipped; only the eBay active-listing fallback is available.');
   }
 
   const notifiers = [new EmailNotifier(env), new DiscordNotifier(env)].filter((n) => n.enabled);
@@ -124,11 +124,11 @@ async function scanOnce() {
   const optionalPerRun = (providers.some((p) => p.name === 'ebay_active') ? config.pricing.ebayActive.maxLookupsPerRun : 0) + (config.ebay.detailFetch === 'never' ? 0 : config.ebay.maxDetailFetches);
   const estMonthly = runsPerMonth * mandatoryPerRun;
   console.log(
-    `RapidAPI usage: ${mandatoryPerRun} mandatory requests/run Ã— ${runsPerMonth} runs/month â‰ˆ ${estMonthly.toLocaleString()} of ${config.ebay.rapidApiMonthlyLimit.toLocaleString()}; ` +
-      `spare quota goes to extra search pages${optionalPerRun ? ` and up to ${optionalPerRun} optional lookups/run` : ''}${config.ebay.protectQuota ? '' : ' (protectQuota OFF â€” overage possible)'}`,
+    `RapidAPI usage: ${mandatoryPerRun} mandatory requests/run x ${runsPerMonth} runs/month ~ ${estMonthly.toLocaleString()} of ${config.ebay.rapidApiMonthlyLimit.toLocaleString()}; ` +
+      `spare quota goes to extra search pages${optionalPerRun ? ` and up to ${optionalPerRun} optional lookups/run` : ''}${config.ebay.protectQuota ? '' : ' (protectQuota OFF - overage possible)'}`,
   );
   if (estMonthly > config.ebay.rapidApiMonthlyLimit) {
-    console.warn(`  WARNING: mandatory searches alone exceed the plan by ~${(estMonthly - config.ebay.rapidApiMonthlyLimit).toLocaleString()} requests/month â€” remove a target/category or scan less often.`);
+    console.warn(`  WARNING: mandatory searches alone exceed the plan by ~${(estMonthly - config.ebay.rapidApiMonthlyLimit).toLocaleString()} requests/month - remove a target/category or scan less often.`);
   }
 
   // --- 1. fetch listings ending soon --------------------------------------
@@ -195,7 +195,7 @@ async function scanOnce() {
 
   // --- 2. filter to the cards we care about -------------------------------
   const candidates = [];
-  const skipped = { noTarget: 0, noGradePrice: 0, alreadyAlerted: 0, outsideWindow: 0, excluded: 0 };
+  const skipped = { noTarget: 0, noGradePrice: 0, alreadyAlerted: 0, outsideWindow: 0, excluded: 0, nonEnglish: 0 };
   for (const { listing, category } of found.values()) {
     if (!listing.endDate || listing.endDate < windowStart || listing.endDate > windowEnd) {
       skipped.outsideWindow += 1;
@@ -206,6 +206,11 @@ async function scanOnce() {
       continue;
     }
     const parsed = parseListing(listing.title, { kind: category.kind });
+    if (config.deal.excludeNonEnglish && parsed.language) {
+      skipped.nonEnglish += 1;
+      if (VERBOSE) console.log(`  skip (${parsed.language}): ${listing.title}`);
+      continue;
+    }
     // Every target that covers this category and whose requirement the title satisfies.
     const matchedTargets = config.targets.filter((t) => t.categoryKeys.includes(category.key) && matchesTarget(t, parsed));
     if (!matchedTargets.length) {
@@ -240,7 +245,7 @@ async function scanOnce() {
   const byTarget = config.targets.map((t) => `${candidates.filter((c) => c.targets.includes(t)).length} ${t.label}`).join(', ');
   console.log(
     `  ${candidates.length} candidates (${byTarget}; ${candidates.filter((c) => c.cached).length} cached) (skipped: ${skipped.noTarget} no target, ${skipped.noGradePrice} unpriceable grade, ` +
-      `${skipped.alreadyAlerted} already alerted, ${skipped.excluded} excluded by title, ${skipped.outsideWindow} outside window)`,
+      `${skipped.alreadyAlerted} already alerted, ${skipped.excluded} excluded by title, ${skipped.nonEnglish} non-English, ${skipped.outsideWindow} outside window)`,
   );
 
   // --- 3. price + evaluate -------------------------------------------------
@@ -474,7 +479,7 @@ async function enrichWithDetails(cand, ebay, psa) {
     const cert = await psa.lookup(parsed.certNumber);
     if (cert) {
       if (cert.grade !== cand.grade.grade) return { parsed, gradeMismatch: `PSA cert ${cert.cert} is grade ${cert.grade}` };
-      // PSA's description is authoritative â€” feed it in as specifics.
+      // PSA's description is authoritative - feed it in as specifics.
       if (cert.subject) specifics['Card Name'] = cert.subject;
       if (cert.brand || cert.variety) specifics['Set'] = [cert.brand, cert.variety].filter(Boolean).join(' ');
       if (cert.cardNumber) specifics['Card Number'] = cert.cardNumber;
