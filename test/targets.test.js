@@ -8,7 +8,9 @@ import * as config from '../config/scan.config.js';
 setVariantHints(config.parallelKeywords);
 const sports = config.categories.find((c) => c.key === 'sports');
 const psa10 = config.targets.find((t) => t.key === 'psa10');
-const auto = config.targets.find((t) => t.key === 'auto');
+// Autos are switched off (too many alerts) but the target is kept defined so
+// its parsing/matching rules stay tested and it can be re-enabled by moving it.
+const auto = config.inactiveTargets.find((t) => t.key === 'auto');
 const ctx = (cat) => ({ epid: null, productFilter: cat.productFilter, parallelKeywords: config.parallelKeywords, optionalVariantTokens: config.optionalVariantTokens });
 const P = (id, console, name, epid) => ({ id, 'console-name': console, 'product-name': name, epid });
 
@@ -83,7 +85,13 @@ test('config: liquidity floor is well above one sale a year, non-English exclude
   assert.equal(config.deal.excludeNonEnglish, true);
 });
 
-test('searchPlan: one eBay search per category with its targets OR-ed together', () => {
+test('active targets: PSA 10 only, and the deal needs $100 of headroom', () => {
+  assert.deepEqual(config.targets.map((t) => t.key), ['psa10']);
+  assert.ok(config.deal.minSavingsUsd >= 100);
+  assert.ok(config.inactiveTargets.some((t) => t.key === 'auto'), 'auto target kept for re-enabling');
+});
+
+test('searchPlan: one eBay search per category (PSA 10 only, graded condition)', () => {
   const plan = searchPlan(config.targets, config.categories);
   assert.equal(plan.length, config.categories.length);
   const pokemon = plan.find((p) => p.category.key === 'pokemon');
@@ -91,10 +99,18 @@ test('searchPlan: one eBay search per category with its targets OR-ed together',
   assert.deepEqual(pokemon.targets.map((t) => t.key), ['psa10']);
   assert.deepEqual(pokemon.conditionIds, ['2750']);
   const sportsPlan = plan.find((p) => p.category.key === 'sports');
+  assert.equal(sportsPlan.query, 'psa 10');
+  assert.deepEqual(sportsPlan.targets.map((t) => t.key), ['psa10']);
+  assert.deepEqual(sportsPlan.conditionIds, ['2750']);
+  assert.equal(sportsPlan.minPrice, 20);
+});
+
+test('searchPlan: with autos re-enabled the sports search ORs the terms and drops the condition filter', () => {
+  const plan = searchPlan([...config.targets, auto], config.categories);
+  const sportsPlan = plan.find((p) => p.category.key === 'sports');
   assert.equal(sportsPlan.query, '(psa 10,auto,autograph)');
   assert.deepEqual(sportsPlan.targets.map((t) => t.key), ['psa10', 'auto']);
   assert.deepEqual(sportsPlan.conditionIds, [], 'targets disagree on condition → no filter');
-  assert.equal(sportsPlan.minPrice, 20);
 });
 
 test('a non-auto listing is never priced as the autograph product', () => {

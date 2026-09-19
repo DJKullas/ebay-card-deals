@@ -4,8 +4,8 @@ Every 10 minutes, look at eBay auctions for sports and Pokémon cards that end *
 
 What it hunts for (`targets` in the config):
 
-* **PSA 10** — Pokémon and sports, graded condition only.
-* **Autographed sports cards, any grade or raw** — pack-pulled autos only. Graded ones are priced at their grade (PSA 9, BGS 9.5, SGC 10 …), raw ones at the guide's ungraded value. Hand-signed / JSA / BAS / PSA-DNA, redemptions, dual/triple autos, cut signatures, booklets and damaged raw cards are skipped on purpose: the matcher would rather miss a card than mis-price one.
+* **PSA 10** — Pokémon and sports, graded condition only. A deal must be at least **$100 and 30% under** the guide value.
+* *(switched off)* **Autographed sports cards, any grade or raw** — pack-pulled autos only; graded ones priced at their grade (PSA 9, BGS 9.5, SGC 10 …), raw ones at the guide's ungraded value, with hand-signed / JSA / BAS / PSA-DNA, redemptions, dual/triple autos, cut signatures, booklets and damaged cards skipped. Produced too many alerts; the target lives in `inactiveTargets` and moving it back into `targets` re-enables it.
 
 Adding other grades or categories is a config change (see [Expanding coverage](#expanding-coverage)).
 
@@ -15,7 +15,7 @@ Adding other grades or categories is a config change (see [Expanding coverage](#
 GitHub Actions: one ~5.7h job (`node src/index.js --loop`), relaunched every 3h, queued behind the running one
   └─ every 10 minutes:
        1. eBay search  ─ RapidAPI "Real-Time eBay Data" /ebay_search (wraps eBay Browse API)
-          one search per category, its targets OR-ed: pokemon "psa 10", sports "(psa 10,auto,autograph)",
+          one search per category, its targets OR-ed: pokemon "psa 10", sports "psa 10" (graded condition),
           auctions with a bid ≥ $20, sorted ending-soonest, itemEndDate <= now + 19 min; first page
           always, more pages while a search overflowed and spare RapidAPI quota allows
        2. parse title  ─ grader/grade, autograph, card number, year, set words, parallel words
@@ -25,9 +25,9 @@ GitHub Actions: one ~5.7h job (`node src/index.js --loop`), relaunched every 3h,
           score every candidate 0-1 for "is this the SAME card", read the value for the
           listing's grade (PSA 10 / PSA 9 / BGS 9.5 / raw ...). Autographed listings may only
           match autographed guide products and vice versa — a hard rule.
-       4. evaluate     ─ (bid + shipping) vs market: ≥30% below, ≥$15 saved, market ≥ $25,
+       4. evaluate     ─ (bid + shipping) vs market: ≥30% below, ≥$100 saved, market ≥ $25,
           confidence ≥ 0.75, guide shows ≥ 12 sales in the last year  =>  deal
-          (autos: ≥35% below, market ≥ $40, confidence ≥ 0.85)
+          (autos, if re-enabled: ≥35% below, market ≥ $40, confidence ≥ 0.85)
        5. notify       ─ ONE email (and/or Discord post) per scan, sent 3 min in with the deals found
           so far, best first (confidence × % below market), max 10. Everything in it has 5-16 min
           left. Pricing carries on afterwards only to warm the cache; late finds are logged, not sent.
@@ -104,9 +104,9 @@ Everything tunable lives in **`config/scan.config.js`** — no code changes need
 | `ebay.maxPagesPerSearch` / `extraPageBurst` | 4 / 4 | extra 200-result pages when a search overflows the window, paid for from spare quota (see below) |
 | `ebay.detailFetch` | `'never'` | `'unmatched'` fetches item specifics (card #, set, cert) only when the title wasn't enough |
 | `categories` | Pokémon, Sports | eBay category ids, price guide, filters |
-| `targets` | PSA 10, Autograph | what to hunt: eBay query + condition + min bid + `require` (grade or autograph) + per-target exclusions and deal overrides |
+| `targets` / `inactiveTargets` | PSA 10 / Autograph | what to hunt: eBay query + condition + min bid + `require` (grade or autograph) + per-target exclusions and deal overrides. Inactive ones are defined but not scanned |
 | `gradePriceKeys` | PSA 10 → `manual-only-price` … raw → `loose-price` | which guide field holds the value for each grade |
-| `deal.minDiscountPct` / `minSavingsUsd` / `minMarketValueUsd` | 30 / 15 / 25 | what counts as a deal (autos override to 35 / 15 / 40) |
+| `deal.minDiscountPct` / `minSavingsUsd` / `minMarketValueUsd` | 30 / 100 / 25 | what counts as a deal: both the % and the $100 floor must hold (autos override to 35 / 100 / 40) |
 | `deal.minMatchConfidence` | 0.75 | how sure we must be it's the right card (autos: 0.85) |
 | `deal.includeShipping` / `assumedShippingUsd` | true / 5 | eBay often reports "calculated" shipping without a number |
 | `deal.minSalesPerYear` | 12 | liquidity floor: the guide's `sales-volume` (sales in the last year, all grades) must be at least this, and must be reported at all |

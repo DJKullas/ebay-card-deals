@@ -187,10 +187,10 @@ async function scanOnce() {
   }
   for (const s of progress) {
     const short = s.fetched < s.total ? ` (${s.total - s.fetched} later-ending listings not fetched)` : '';
-    console.log(`  ${s.category.label} ("${s.query}"${s.minPrice ? `, bid â‰¥ $${s.minPrice}` : ''}): ${s.fetched} of ${s.total} listings in ${s.pages} page(s)${short}`);
+    console.log(`  ${s.category.label} ("${s.query}"${s.minPrice ? `, bid >= $${s.minPrice}` : ''}): ${s.fetched} of ${s.total} listings in ${s.pages} page(s)${short}`);
   }
   if (extraUsed || progress.some((s) => s.fetched < s.total)) {
-    console.log(`  extra pages: ${extraUsed} used of ${Number.isFinite(extraAllowed) ? extraAllowed : 'âˆž'} allowed by quota this run`);
+    console.log(`  extra pages: ${extraUsed} used of ${Number.isFinite(extraAllowed) ? extraAllowed : 'unlimited'} allowed by quota this run`);
   }
 
   // --- 2. filter to the cards we care about -------------------------------

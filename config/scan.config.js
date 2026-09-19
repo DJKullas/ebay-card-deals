@@ -144,6 +144,10 @@ export const categories = [
  *   deal          overrides for `deal` below (stricter for harder-to-match cards)
  *
  * To also watch PSA 9s, add { key:'psa9', searchTerms:['psa 9'], require:{grader:'PSA', grade:9}, ... }.
+ *
+ * Active targets. Sep 19 2026: PSA 10 only — autos produced too many alerts.
+ * The autograph target is kept below in `inactiveTargets`; move it back into
+ * this array to re-enable it.
  */
 export const targets = [
   {
@@ -155,6 +159,10 @@ export const targets = [
     minPrice: 20,
     require: { grader: 'PSA', grade: 10 },
   },
+];
+
+/** Defined but not scanned. Kept so switching back on is a one-line move. */
+export const inactiveTargets = [
   {
     key: 'auto',
     label: 'Autograph',
@@ -204,9 +212,12 @@ export const deal = {
   // Alert when (current price + shipping) is at least this % below market.
   minDiscountPct: 30,
   // Ignore cards whose market value is below this (not worth the email).
+  // Implied anyway by minSavingsUsd: a $100 saving at 30% off needs a ~$143 card.
   minMarketValueUsd: 25,
-  // ...and require at least this many dollars of headroom.
-  minSavingsUsd: 15,
+  // ...and require at least this many dollars of headroom between what you'd
+  // pay (bid + shipping) and the guide value. Sep 19 2026: raised 15 -> 100 to
+  // cut alert volume; small-dollar "deals" were not worth the interruption.
+  minSavingsUsd: 100,
   // Include shipping in the "what you'd pay" number. When eBay doesn't return a
   // shipping cost (calculated shipping) this assumed amount is used.
   includeShipping: true,
